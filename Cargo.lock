@@ -3007,6 +3007,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bytes",
+ "num-traits",
  "opendal",
  "sea-orm",
  "serde",
