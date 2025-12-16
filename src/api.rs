@@ -5,7 +5,6 @@ use axum::{
     routing::post,
 };
 use thiserror::Error;
-use tracing::info;
 
 use crate::{AppState, ingest::BatchIngest};
 

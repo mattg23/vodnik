@@ -12,7 +12,7 @@ Content-Type: application/json
 {
   "series": 10,
   "ts": [1,2,3,4,5],
-  "values":  [1,2,3,4,57],
+  "values":  [1,2,3,4,7],
   "type": "i64"
 }
 

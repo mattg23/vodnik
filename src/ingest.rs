@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use thiserror::Error;
+use tracing::warn;
 
 use crate::{api::ApiError, meta::SeriesId};
 
@@ -38,6 +39,7 @@ pub struct BatchIngest {
 impl BatchIngest {
     pub fn validate(&self) -> Result<(), IngestError> {
         if self.ts.len() != self.vals.len() {
+            warn!("length mismatch");
             return Err(IngestError::LengthMismatch);
         }
         Ok(())

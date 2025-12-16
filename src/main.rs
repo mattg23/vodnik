@@ -1,13 +1,14 @@
 use std::env;
 
 use axum::{Router, routing::get};
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    LatencyUnit,
+    trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+};
+use tracing::Level;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::meta::{
-    BlockLength, BlockNumber, Label, MetaStore, SeriesId, SeriesMeta, StorageType, TimeResolution,
-    store::SqlMetaStore,
-};
+use crate::meta::store::SqlMetaStore;
 
 mod api;
 mod ingest;
@@ -48,10 +49,25 @@ async fn main() -> anyhow::Result<()> {
     let store = SqlMetaStore::create(&db_url).await?;
 
     let state = AppState { meta_store: store };
+
     let app = Router::new()
         .route("/health", get(health))
         .merge(api::routes())
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().include_headers(false))
+                .on_request(DefaultOnRequest::new().level(Level::INFO))
+                .on_response(
+                    DefaultOnResponse::new()
+                        .level(Level::INFO)
+                        .latency_unit(LatencyUnit::Millis),
+                )
+                .on_failure(
+                    DefaultOnFailure::new()
+                        .level(Level::ERROR)
+                        .latency_unit(LatencyUnit::Millis),
+                ),
+        )
         .with_state(state);
 
     let port = 8123;
