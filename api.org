@@ -1,0 +1,28 @@
+* Vodnik API :verb:
+template http://127.0.0.1:8123
+Accept: */*
+
+** health check :verb:
+get /health
+
+** batch ingest success                                                :verb:
+post /batch
+Content-Type: application/json
+
+{
+  "series": 10,
+  "ts": [1,2,3,4,5],
+  "values":  [1,2,3,4,57],
+  "type": "i64"
+}
+
+** batch ingest 400 len mismatch                                       :verb:
+post /batch
+Content-Type: application/json
+
+{
+  "series": 10,
+  "ts": [1,2,3,4,5],
+  "values":  [1,2,3,4,5,7],
+  "type": "i64"
+}

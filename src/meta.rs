@@ -17,6 +17,7 @@ impl StorableNum for i64 {}
 impl StorableNum for i32 {}
 impl StorableNum for u32 {}
 impl StorableNum for u64 {}
+impl StorableNum for u8 {}
 
 #[derive(Debug, Copy, Clone)]
 pub struct Block<T: StorableNum> {
@@ -131,7 +132,7 @@ pub struct Label {
     pub name: String,
     pub value: String,
 }
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Deserialize)]
 pub struct SeriesId(pub NonZero<u64>);
 
 impl std::fmt::Display for SeriesId {

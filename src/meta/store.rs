@@ -141,6 +141,7 @@ pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
 
+#[derive(Clone, Debug)]
 pub struct SqlMetaStore {
     db: DatabaseConnection,
 }
