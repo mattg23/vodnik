@@ -4,7 +4,7 @@ use tracing::info;
 
 use crate::meta::{
     BlockLength, BlockNumber, Label, MetaStore, SeriesId, SeriesMeta, StorageType, TimeResolution,
-    store::SqliteMetaStore,
+    store::SqlMetaStore,
 };
 
 mod meta;
@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     info!("The goblin says 'Hello'");
     let db_url =
         env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://db.sqlite?mode=rwc".to_string());
-    let store = SqliteMetaStore::create(&db_url).await?;
+    let store = SqlMetaStore::create(&db_url).await?;
 
     let series = SeriesMeta {
         id: SeriesId(NonZero::new(1).unwrap()),

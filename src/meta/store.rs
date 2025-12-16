@@ -1,11 +1,13 @@
-use std::num::NonZero;
+use std::{collections::BTreeMap, num::NonZero};
 
 use crate::meta::*;
 
 use sea_orm::{
     ActiveValue::Set, Database, FromJsonQueryResult, IntoActiveModel, entity::prelude::*,
 };
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
@@ -90,8 +92,35 @@ impl From<DbTimeResolution> for TimeResolution {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, FromJsonQueryResult)]
+#[derive(Clone, Debug, PartialEq, FromJsonQueryResult)]
 pub struct DbLabels(pub Vec<Label>);
+
+impl Serialize for DbLabels {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for label in &self.0 {
+            map.serialize_entry(&label.name, &label.value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DbLabels {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let map = BTreeMap::<String, String>::deserialize(deserializer)?;
+        Ok(DbLabels(
+            map.into_iter()
+                .map(|(name, value)| Label { name, value })
+                .collect(),
+        ))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "series")]
@@ -112,12 +141,12 @@ pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
 
-pub struct SqliteMetaStore {
+pub struct SqlMetaStore {
     db: DatabaseConnection,
 }
 
-impl SqliteMetaStore {
-    pub fn new(db: DatabaseConnection) -> Self {
+impl SqlMetaStore {
+    fn new(db: DatabaseConnection) -> Self {
         Self { db }
     }
 
@@ -150,7 +179,7 @@ fn orm_err(e: sea_orm::DbErr) -> MetaStoreError {
     MetaStoreError::Unknown(e.into())
 }
 
-impl MetaStore for SqliteMetaStore {
+impl MetaStore for SqlMetaStore {
     async fn create(&self, series: &SeriesMeta) -> Result<SeriesId, MetaStoreError> {
         let active = ActiveModel {
             name: Set(series.name.clone()),
