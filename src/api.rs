@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use axum::{
     Json, Router,
     http::StatusCode,
@@ -5,11 +7,14 @@ use axum::{
     routing::post,
 };
 use thiserror::Error;
+use tracing::warn;
 
-use crate::{AppState, ingest::BatchIngest};
+use crate::{AppState, crud::create_series, ingest::BatchIngest, meta::MetaStoreError};
 
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/batch", post(batch_ingest))
+    Router::new()
+        .route("/batch", post(batch_ingest))
+        .route("/series", post(create_series))
 }
 
 #[derive(Debug, Error)]
@@ -26,6 +31,11 @@ pub enum ApiError {
     Internal,
 }
 
+pub(crate) fn as_internal_err<E: Display>(err: E) -> ApiError {
+    warn!("internal error: {}", err);
+    ApiError::Internal
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
@@ -39,6 +49,16 @@ impl IntoResponse for ApiError {
             ),
         }
         .into_response()
+    }
+}
+
+impl From<MetaStoreError> for ApiError {
+    fn from(err: MetaStoreError) -> Self {
+        match err {
+            MetaStoreError::Duplicate(_) => ApiError::Conflict(err.to_string()),
+            MetaStoreError::NotFound(_) => ApiError::NotFound(err.to_string()),
+            MetaStoreError::Unknown(_) => as_internal_err(err),
+        }
     }
 }
 

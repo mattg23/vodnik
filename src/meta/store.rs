@@ -131,6 +131,8 @@ pub struct Model {
     pub storage_type: DbStorageType,
     pub block_len: i64,
     pub block_res: DbTimeResolution,
+    pub sample_len: i64,
+    pub sample_res: DbTimeResolution,
     pub first: i64,
     pub last: i64,
     pub labels: DbLabels,
@@ -169,8 +171,10 @@ fn model_to_meta(m: Model) -> SeriesMeta {
         storage_type: m.storage_type.into(),
         block_length: BlockLength(NonZero::new(m.block_len as u64).unwrap()),
         block_resolution: m.block_res.into(),
-        first_block: BlockNumber(NonZero::new(m.first as u64).unwrap()),
-        last_block: BlockNumber(NonZero::new(m.last as u64).unwrap()),
+        sample_length: SampleLength(NonZero::new(m.sample_len as u64).unwrap()),
+        sample_resolution: m.sample_res.into(),
+        first_block: BlockNumber(m.first as u64),
+        last_block: BlockNumber(m.last as u64),
         labels: m.labels.0,
     }
 }
@@ -187,8 +191,10 @@ impl MetaStore for SqlMetaStore {
             storage_type: Set(series.storage_type.into()),
             block_len: Set(series.block_length.0.get() as i64),
             block_res: Set(series.block_resolution.into()),
-            first: Set(series.first_block.0.get() as i64),
-            last: Set(series.last_block.0.get() as i64),
+            sample_len: Set(series.sample_length.0.get() as i64),
+            sample_res: Set(series.sample_resolution.into()),
+            first: Set(series.first_block.0 as i64),
+            last: Set(series.last_block.0 as i64),
             labels: Set(DbLabels(series.labels.clone())),
             ..Default::default()
         };
@@ -228,8 +234,10 @@ impl MetaStore for SqlMetaStore {
         model.storage_type = Set(series.storage_type.into());
         model.block_len = Set(series.block_length.0.get() as i64);
         model.block_res = Set(series.block_resolution.into());
-        model.first = Set(series.first_block.0.get() as i64);
-        model.last = Set(series.last_block.0.get() as i64);
+        model.sample_len = Set(series.sample_length.0.get() as i64);
+        model.sample_res = Set(series.sample_resolution.into());
+        model.first = Set(series.first_block.0 as i64);
+        model.last = Set(series.last_block.0 as i64);
         model.labels = Set(DbLabels(series.labels.clone()));
 
         model.update(&self.db).await.map_err(orm_err)?;

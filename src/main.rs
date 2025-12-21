@@ -11,6 +11,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::meta::store::SqlMetaStore;
 
 mod api;
+mod crud;
+mod helpers;
 mod ingest;
 mod meta;
 

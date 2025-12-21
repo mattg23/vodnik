@@ -49,12 +49,12 @@ impl<T: StorableNum> Block<T> {
         }
     }
 
-    pub fn update(
+    pub fn update_block_meta(
         &mut self,
         value: T,
         offset: u32,
         old_value: &Option<T>,
-        block_data: &[Option<T>],
+        updated_block_data: &[Option<T>],
     ) {
         if let Some(old) = old_value {
             self.sum -= *old;
@@ -89,7 +89,7 @@ impl<T: StorableNum> Block<T> {
             self.min = T::max_value();
             self.max = T::min_value();
 
-            for i in block_data.iter().filter_map(|x| *x) {
+            for i in updated_block_data.iter().filter_map(|x| *x) {
                 if self.min > i {
                     self.min = i;
                 }
@@ -102,8 +102,59 @@ impl<T: StorableNum> Block<T> {
     }
 }
 
+#[derive(Debug)]
+pub enum SizedBlock {
+    F32Block(Block<f32>, Vec<Option<f32>>),
+    F64Block(Block<f64>, Vec<Option<f64>>),
+    I32Block(Block<i32>, Vec<Option<i32>>),
+    I64Block(Block<i64>, Vec<Option<i64>>),
+    U32Block(Block<u32>, Vec<Option<u32>>),
+    U64Block(Block<u64>, Vec<Option<u64>>),
+    U8Block(Block<u8>, Vec<Option<u8>>),
+}
+
+impl SizedBlock {
+    pub fn get_size(&self) -> usize {
+        match self {
+            SizedBlock::F32Block(_, d) => {
+                4 + 4 + 4 + std::mem::size_of::<f32>() * 5 + std::mem::size_of::<f32>() * d.len()
+            }
+            SizedBlock::F64Block(_, d) => {
+                4 + 4 + 4 + std::mem::size_of::<f64>() * 5 + std::mem::size_of::<f64>() * d.len()
+            }
+            SizedBlock::I32Block(_, d) => {
+                4 + 4 + 4 + std::mem::size_of::<i32>() * 5 + std::mem::size_of::<i32>() * d.len()
+            }
+            SizedBlock::I64Block(_, d) => {
+                4 + 4 + 4 + std::mem::size_of::<i64>() * 5 + std::mem::size_of::<i64>() * d.len()
+            }
+            SizedBlock::U32Block(_, d) => {
+                4 + 4 + 4 + std::mem::size_of::<u32>() * 5 + std::mem::size_of::<u32>() * d.len()
+            }
+            SizedBlock::U64Block(_, d) => {
+                4 + 4 + 4 + std::mem::size_of::<u64>() * 5 + std::mem::size_of::<u64>() * d.len()
+            }
+            SizedBlock::U8Block(_, d) => {
+                4 + 4 + 4 + std::mem::size_of::<u8>() * 5 + std::mem::size_of::<u8>() * d.len()
+            }
+        }
+    }
+
+    pub fn get_count_written(&self) -> u32 {
+        match self {
+            SizedBlock::F32Block(b, _) => b.count,
+            SizedBlock::F64Block(b, _) => b.count,
+            SizedBlock::I32Block(b, _) => b.count,
+            SizedBlock::I64Block(b, _) => b.count,
+            SizedBlock::U32Block(b, _) => b.count,
+            SizedBlock::U64Block(b, _) => b.count,
+            SizedBlock::U8Block(b, _) => b.count,
+        }
+    }
+}
+
 #[repr(u64)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum TimeResolution {
     Millisecond = 1,
     Second = 1000,
@@ -111,7 +162,13 @@ pub enum TimeResolution {
     Hour = 1000 * 60 * 60,
 }
 
-#[derive(Debug, Copy, Clone)]
+impl From<TimeResolution> for u64 {
+    fn from(value: TimeResolution) -> Self {
+        value as u64
+    }
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum StorageType {
     Float32,
     Float64,
@@ -122,17 +179,33 @@ pub enum StorageType {
     Enumeration,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct BlockNumber(pub NonZero<u64>);
-#[derive(Copy, Clone, Debug)]
+impl StorageType {
+    pub const fn sample_bytes(self) -> u64 {
+        match self {
+            StorageType::Float32 => 4,
+            StorageType::Float64 => 8,
+            StorageType::Int32 => 4,
+            StorageType::Int64 => 8,
+            StorageType::UInt32 => 4,
+            StorageType::UInt64 => 8,
+            StorageType::Enumeration => 1,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct BlockNumber(pub u64);
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct BlockLength(pub NonZero<u64>);
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct SampleLength(pub NonZero<u64>);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Label {
     pub name: String,
     pub value: String,
 }
-#[derive(Copy, Clone, Debug, Deserialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub struct SeriesId(pub NonZero<u64>);
 
 impl std::fmt::Display for SeriesId {
@@ -141,13 +214,15 @@ impl std::fmt::Display for SeriesId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SeriesMeta {
     pub id: SeriesId,
     pub name: String,
     pub storage_type: StorageType,
     pub block_length: BlockLength,
     pub block_resolution: TimeResolution,
+    pub sample_length: SampleLength,
+    pub sample_resolution: TimeResolution,
     pub first_block: BlockNumber,
     pub last_block: BlockNumber,
     pub labels: Vec<Label>,

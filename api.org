@@ -26,3 +26,18 @@ Content-Type: application/json
   "values":  [1,2,3,4,5,7],
   "type": "i64"
 }
+
+** create series :verb:
+post /series
+Content-Type: application/json
+
+{
+  "name": "temperature_outdoor",
+  "storage_type": "Float64",
+  "sample_length": 5,
+  "sample_resolution": "Minute",
+  "labels": [
+    { "name": "unit", "value": "celsius" },
+    { "name": "location", "value": "garden" }
+  ]
+}

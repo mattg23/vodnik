@@ -5,6 +5,8 @@ CREATE TABLE series (
     storage_type TEXT NOT NULL,
     block_len INTEGER NOT NULL,
     block_res TEXT NOT NULL,
+    sample_len INTEGER NOT NULL,
+    sample_res TEXT NOT NULL,
     first INTEGER NOT NULL,
     last INTEGER NOT NULL,
     labels TEXT NOT NULL
