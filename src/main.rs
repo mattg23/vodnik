@@ -6,7 +6,8 @@ use tower_http::{
     trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+//use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use crate::meta::store::SqlMetaStore;
 
@@ -40,10 +41,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "vodnik=info,tower_http=debug".into()),
-        )
+        .with(EnvFilter::from_env("VODNIK_LOG"))
         .init();
 
     let db_url =
@@ -57,18 +55,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(api::routes())
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().include_headers(false))
-                .on_request(DefaultOnRequest::new().level(Level::INFO))
-                .on_response(
-                    DefaultOnResponse::new()
-                        .level(Level::INFO)
-                        .latency_unit(LatencyUnit::Millis),
-                )
-                .on_failure(
-                    DefaultOnFailure::new()
-                        .level(Level::ERROR)
-                        .latency_unit(LatencyUnit::Millis),
-                ),
+                .make_span_with(DefaultMakeSpan::new().include_headers(false)),
         )
         .with_state(state);
 

@@ -34,8 +34,8 @@ Content-Type: application/json
 {
   "name": "temperature_outdoor",
   "storage_type": "Float64",
-  "sample_length": 5,
-  "sample_resolution": "Minute",
+  "sample_length": 1,
+  "sample_resolution": "Hour",
   "labels": [
     { "name": "unit", "value": "celsius" },
     { "name": "location", "value": "garden" }

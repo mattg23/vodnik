@@ -3,7 +3,6 @@ name = "vodnik"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-license-file = "LICENSE.txt"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -20,3 +19,10 @@ tokio = { version = "1.48.0", features = ["full"] }
 tower-http = { version = "0.6.8", features = ["trace"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = "symbols"
