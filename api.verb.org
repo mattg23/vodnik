@@ -41,3 +41,23 @@ Content-Type: application/json
     { "name": "location", "value": "garden" }
   ]
 }
+
+** get series :verb:
+get /series/1
+Content-Type: application/json
+
+** update series                                                       :verb:
+patch /series/1
+Content-Type: application/json
+
+{
+  "name": "NEWNAME23",
+  "labels": [
+    { "name": "unit", "value": "celsius" },
+    { "name": "location", "value": "garden" }
+  ]
+}
+
+** delete series                                                       :verb:
+delete /series/1
+Content-Type: application/json

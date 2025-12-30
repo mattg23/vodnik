@@ -1,6 +1,10 @@
 use std::num::NonZero;
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use regex::Regex;
 use serde::Deserialize;
 use thiserror::Error;
@@ -10,8 +14,8 @@ use crate::{
     api::{ApiError, as_internal_err},
     helpers::{derive_block_size, duration},
     meta::{
-        BlockLength, BlockNumber, Label, MetaStore, SampleLength, SeriesId, SeriesMeta,
-        StorageType, TimeResolution,
+        self, BlockLength, BlockNumber, Label, MetaStore, MetaStoreError, SampleLength, SeriesId,
+        SeriesMeta, StorageType, TimeResolution,
     },
 };
 
@@ -71,6 +75,7 @@ impl From<&CreateSeries> for SeriesMeta {
     }
 }
 
+const RE_NAME: &str = "^[a-zA-Z][a-zA-Z0-9_]*$";
 impl CreateSeries {
     pub fn validate(&self) -> Result<(), ApiError> {
         if let (Some(block_resolution), Some(block_length)) =
@@ -84,14 +89,21 @@ impl CreateSeries {
             }
         }
 
-        let re = Regex::new("^[a-zA-Z][a-zA-Z0-9_]*$").map_err(|e| as_internal_err(e))?;
-
-        if !re.is_match(self.name.as_str()) {
-            return Err(CrudError::InvalidSeriesName(self.name.clone()).into());
-        }
+        validate_series_name(self.name.as_str())?;
 
         Ok(())
     }
+}
+
+fn validate_series_name(name: &str) -> Result<(), ApiError> {
+    let re = Regex::new(RE_NAME).map_err(|e| as_internal_err(e))?;
+    Ok(if !re.is_match(name) {
+        return Err(CrudError::InvalidSeriesName(name.to_string()).into());
+    })
+}
+
+fn into_api_error(e: MetaStoreError) -> ApiError {
+    e.into()
 }
 
 pub(crate) async fn create_series(
@@ -103,7 +115,70 @@ pub(crate) async fn create_series(
         .meta_store
         .create(&(&series).into())
         .await
-        .map_err(as_internal_err)?;
+        .map_err(into_api_error)?;
 
     Ok((StatusCode::CREATED, Json(id)))
+}
+
+pub(crate) async fn read_series(
+    State(state): State<AppState>,
+    Path(id): Path<SeriesId>,
+) -> Result<Json<SeriesMeta>, ApiError> {
+    let series = state.meta_store.get(id).await.map_err(into_api_error)?;
+    Ok(Json(series))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSeries {
+    pub name: Option<String>,
+    pub labels: Option<Vec<Label>>,
+}
+
+impl UpdateSeries {
+    fn validate(&self) -> Result<(), ApiError> {
+        if self.name.is_none() && self.labels.is_none() {
+            return Err(ApiError::BadRequest("No changes to apply".to_string()));
+        }
+
+        if let Some(name) = &self.name {
+            validate_series_name(name)?;
+        }
+
+        Ok(())
+    }
+}
+
+pub(crate) async fn update_series(
+    State(state): State<AppState>,
+    Path(id): Path<SeriesId>,
+    Json(update): Json<UpdateSeries>,
+) -> Result<Json<SeriesMeta>, ApiError> {
+    update.validate()?;
+    let mut series = state.meta_store.get(id).await.map_err(into_api_error)?;
+
+    if let Some(name) = update.name {
+        series.name = name;
+    }
+
+    if let Some(labels) = update.labels {
+        series.labels = labels;
+    }
+
+    state
+        .meta_store
+        .update(&series)
+        .await
+        .map_err(into_api_error)?;
+
+    let series = state.meta_store.get(id).await.map_err(into_api_error)?;
+    Ok(Json(series))
+}
+
+pub(crate) async fn delete_series(
+    State(state): State<AppState>,
+    Path(id): Path<SeriesId>,
+) -> Result<StatusCode, ApiError> {
+    state.meta_store.delete(id).await.map_err(into_api_error)?;
+    // TODO: we need to queue background batch deletion here for blocks
+    Ok(StatusCode::NO_CONTENT)
 }
