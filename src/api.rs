@@ -1,18 +1,18 @@
 use std::fmt::Display;
 
 use axum::{
-    Json, Router,
+    Router,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
 use thiserror::Error;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::{
     AppState,
     crud::{create_series, delete_series, read_series, update_series},
-    ingest::BatchIngest,
+    ingest::batch_ingest,
     meta::MetaStoreError,
 };
 
@@ -37,6 +37,8 @@ pub enum ApiError {
     Unprocessable(String),
     #[error("internal server error")]
     Internal,
+    #[error("server busy")]
+    ResourceLocked,
 }
 
 pub(crate) fn as_internal_err<E: Display>(err: E) -> ApiError {
@@ -55,6 +57,9 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal server error".into(),
             ),
+            ApiError::ResourceLocked => {
+                (StatusCode::SERVICE_UNAVAILABLE, "server busy".to_string())
+            }
         }
         .into_response()
     }
@@ -70,8 +75,9 @@ impl From<MetaStoreError> for ApiError {
     }
 }
 
-async fn batch_ingest(Json(req): Json<BatchIngest>) -> Result<(), ApiError> {
-    // TODO: limit req size + add streaming endpoint
-    req.validate()?;
-    Ok(())
+impl From<opendal::Error> for ApiError {
+    fn from(err: opendal::Error) -> Self {
+        error!("opendal::Error: {err:?}");
+        as_internal_err(err)
+    }
 }

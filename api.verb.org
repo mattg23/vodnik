@@ -10,10 +10,10 @@ post /batch
 Content-Type: application/json
 
 {
-  "series": 10,
-  "ts": [1,2,3,4,5],
-  "values":  [1,2,3,4,7],
-  "type": "i64"
+  "series": 14,
+  "ts": [1767111429344],
+  "values":  [1337],
+  "type": "f32"
 }
 
 ** batch ingest 400 len mismatch                                       :verb:
@@ -21,10 +21,10 @@ post /batch
 Content-Type: application/json
 
 {
-  "series": 10,
-  "ts": [1,2,3,4,5],
-  "values":  [1,2,3,4,5,7],
-  "type": "i64"
+  "series": 14,
+  "ts": [1767111429344],
+  "values":  [1337,229],
+  "type": "f32"
 }
 
 ** create series :verb:
@@ -33,9 +33,9 @@ Content-Type: application/json
 
 {
   "name": "temperature_outdoor",
-  "storage_type": "Float64",
+  "storage_type": "Float32",
   "sample_length": 1,
-  "sample_resolution": "Hour",
+  "sample_resolution": "Second",
   "labels": [
     { "name": "unit", "value": "celsius" },
     { "name": "location", "value": "garden" }
@@ -43,7 +43,7 @@ Content-Type: application/json
 }
 
 ** get series :verb:
-get /series/1
+get /series/10
 Content-Type: application/json
 
 ** update series                                                       :verb:

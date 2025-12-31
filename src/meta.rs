@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZero;
 use thiserror::Error;
 
+use crate::api::ApiError;
+
 // for f64/f32 NaN is not allowed. this should be checked at the boundary
 // at ingestion time. StorableNum assumes a non-NaN value for floating point types
 pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy {
@@ -19,7 +21,7 @@ impl StorableNum for u32 {}
 impl StorableNum for u64 {}
 impl StorableNum for u8 {}
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct Block<T: StorableNum> {
     // BLOCK stats need to be adjusted for quality later
     // for v1 we prob want a fixed set of allowed "qualities"
@@ -102,7 +104,7 @@ impl<T: StorableNum> Block<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum SizedBlock {
     F32Block(Block<f32>, Vec<Option<f32>>),
     F64Block(Block<f64>, Vec<Option<f64>>),
@@ -193,7 +195,7 @@ impl StorageType {
     }
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct BlockNumber(pub u64);
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct BlockLength(pub NonZero<u64>);
@@ -205,7 +207,7 @@ pub struct Label {
     pub name: String,
     pub value: String,
 }
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct SeriesId(pub NonZero<u64>);
 
 impl std::fmt::Display for SeriesId {
@@ -236,6 +238,10 @@ pub enum MetaStoreError {
     NotFound(SeriesId),
     #[error(transparent)]
     Unknown(#[from] anyhow::Error),
+}
+
+pub(crate) fn into_api_error(e: MetaStoreError) -> ApiError {
+    e.into()
 }
 
 #[derive(Debug)]

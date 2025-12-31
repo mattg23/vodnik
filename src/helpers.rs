@@ -9,7 +9,7 @@ pub fn get_block_start_as_offset(meta: &SeriesMeta, block_id: u64) -> u64 {
     res * block_id * meta.block_length.0.get()
 }
 
-pub fn get_block_id(meta: SeriesMeta, unix_ms: u64) -> u64 {
+pub fn get_block_id(meta: &SeriesMeta, unix_ms: u64) -> u64 {
     let res: u64 = meta.block_resolution.into();
     unix_ms / (meta.block_length.0.get() * res)
 }

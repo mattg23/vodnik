@@ -8,6 +8,7 @@ license = "Apache-2.0"
 anyhow = "1.0.100"
 axum = "0.8.7"
 bytes = "1.11.0"
+dashmap = "6.1.0"
 num-traits = "0.2.19"
 opendal = { version = "0.55.0", features = ["services-fs"] }
 regex = "1.12.2"

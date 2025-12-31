@@ -1,6 +1,10 @@
-use std::env;
+use std::{
+    env,
+    sync::{Arc, Mutex},
+};
 
 use axum::{Router, routing::get};
+use opendal::Operator;
 use tower_http::{
     LatencyUnit,
     trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
@@ -9,11 +13,12 @@ use tracing::Level;
 //use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-use crate::meta::store::SqlMetaStore;
+use crate::{hot::HotSet, meta::store::SqlMetaStore};
 
 mod api;
 mod crud;
 mod helpers;
+mod hot;
 mod ingest;
 mod meta;
 
@@ -33,6 +38,8 @@ pub const VODNIK_ASCII: &str = r#"
 #[derive(Clone, Debug)]
 struct AppState {
     pub meta_store: SqlMetaStore,
+    pub storage: Operator,
+    pub hot: Arc<HotSet>,
 }
 
 #[tokio::main]
@@ -48,7 +55,19 @@ async fn main() -> anyhow::Result<()> {
         env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://db.sqlite?mode=rwc".to_string());
     let store = SqlMetaStore::create(&db_url).await?;
 
-    let state = AppState { meta_store: store };
+    let mut builder = opendal::services::Fs::default();
+    builder = builder.root("/tmp/vodnik_test");
+
+    let op = Operator::new(builder)
+        .unwrap()
+        .layer(opendal::layers::LoggingLayer::default())
+        .finish();
+
+    let state = AppState {
+        meta_store: store,
+        storage: op,
+        hot: Arc::new(HotSet::new()),
+    };
 
     let app = Router::new()
         .route("/health", get(health))
