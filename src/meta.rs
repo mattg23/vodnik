@@ -7,17 +7,100 @@ use thiserror::Error;
 
 use crate::api::ApiError;
 
+pub trait SafeAdd: Copy {
+    fn safe_add(self, other: Self) -> Self;
+}
+
+macro_rules! impl_safe_add_int {
+    ($($t:ty),*) => {
+        $(
+            impl SafeAdd for $t {
+                #[inline]
+                fn safe_add(self, other: Self) -> Self {
+                    self.saturating_add(other)
+                }
+            }
+        )*
+    };
+}
+
+impl_safe_add_int!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
+
 // for f64/f32 NaN is not allowed. this should be checked at the boundary
 // at ingestion time. StorableNum assumes a non-NaN value for floating point types
-pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy {}
+pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy {
+    type Accumulator: Num
+        + NumCast
+        + PartialOrd
+        + Copy
+        + NumAssign
+        + SafeAdd
+        + std::fmt::Debug
+        + Default;
 
-impl StorableNum for f64 {}
-impl StorableNum for f32 {}
-impl StorableNum for i64 {}
-impl StorableNum for i32 {}
-impl StorableNum for u32 {}
-impl StorableNum for u64 {}
-impl StorableNum for u8 {}
+    fn to_acc(self) -> Self::Accumulator;
+}
+
+impl SafeAdd for f32 {
+    #[inline]
+    fn safe_add(self, other: Self) -> Self {
+        self + other
+    }
+}
+
+impl SafeAdd for f64 {
+    #[inline]
+    fn safe_add(self, other: Self) -> Self {
+        self + other
+    }
+}
+impl StorableNum for f32 {
+    type Accumulator = f64;
+    fn to_acc(self) -> f64 {
+        self as f64
+    }
+}
+
+impl StorableNum for f64 {
+    type Accumulator = f64;
+    fn to_acc(self) -> f64 {
+        self
+    }
+}
+
+impl StorableNum for i32 {
+    type Accumulator = i64;
+    fn to_acc(self) -> i64 {
+        self as i64
+    }
+}
+
+impl StorableNum for u32 {
+    type Accumulator = u64;
+    fn to_acc(self) -> u64 {
+        self as u64
+    }
+}
+
+impl StorableNum for i64 {
+    type Accumulator = i128;
+    fn to_acc(self) -> i128 {
+        self as i128
+    }
+}
+
+impl StorableNum for u64 {
+    type Accumulator = u128;
+    fn to_acc(self) -> u128 {
+        self as u128
+    }
+}
+impl StorableNum for u8 {
+    type Accumulator = u64;
+    fn to_acc(self) -> u64 {
+        self as u64
+    }
+}
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct BlockMeta<T: StorableNum> {
@@ -25,7 +108,7 @@ pub struct BlockMeta<T: StorableNum> {
     pub count_valid: u32, // aka good | uncertain
 
     // stats for valid values
-    pub sum: T,
+    pub sum: T::Accumulator,
     pub min: T,
     pub max: T,
 
@@ -60,7 +143,7 @@ impl<T: StorableNum> BlockMeta<T> {
             count_valid: 0,
             fst_offset: u32::MAX,
             lst_offset: u32::MIN,
-            sum: T::zero(),
+            sum: T::Accumulator::default(),
             min: T::max_value(),
             max: T::min_value(),
             fst: T::zero(),
@@ -101,7 +184,7 @@ impl<T: StorableNum> BlockMeta<T> {
         self.count_non_missing = 0;
         self.count_valid = 0;
 
-        self.sum = T::zero();
+        self.sum = T::Accumulator::default();
         self.min = T::max_value();
         self.max = T::min_value();
 
@@ -162,7 +245,7 @@ impl<T: StorableNum> BlockMeta<T> {
             // calculate stats for valid (good | uncertain) data
             if q.is_good() || q.is_uncertain() {
                 self.count_valid += 1;
-                self.sum += v;
+                self.sum = self.sum.safe_add(v.to_acc());
 
                 if v < self.min {
                     self.min = v;
