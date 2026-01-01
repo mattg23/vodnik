@@ -2,16 +2,14 @@ pub mod store;
 
 use num_traits::{Bounded, Num, NumAssign, NumCast};
 use serde::{Deserialize, Serialize};
-use std::num::NonZero;
+use std::{fmt, num::NonZero};
 use thiserror::Error;
 
 use crate::api::ApiError;
 
 // for f64/f32 NaN is not allowed. this should be checked at the boundary
 // at ingestion time. StorableNum assumes a non-NaN value for floating point types
-pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy {
-    // TODO: add quality
-}
+pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy {}
 
 impl StorableNum for f64 {}
 impl StorableNum for f32 {}
@@ -22,25 +20,44 @@ impl StorableNum for u64 {}
 impl StorableNum for u8 {}
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct Block<T: StorableNum> {
-    // BLOCK stats need to be adjusted for quality later
-    // for v1 we prob want a fixed set of allowed "qualities"
-    // something like GOOD, BAD, MISSING, DELETED, MANUAL
-    pub count: u32,
-    pub fst_offset: u32,
-    pub lst_offset: u32,
+pub struct BlockMeta<T: StorableNum> {
+    pub count_non_missing: u32,
+    pub count_valid: u32, // aka good | uncertain
 
+    // stats for valid values
     pub sum: T,
     pub min: T,
     pub max: T,
+
+    // fst/lst valid (good | uncertain)
+    pub fst_valid: T,
+    pub fst_valid_q: Quality,
+
+    pub lst_valid: T,
+    pub lst_valid_q: Quality,
+
+    pub fst_valid_offset: u32,
+    pub lst_valid_offset: u32,
+
+    // fst/lst any qual
     pub fst: T,
+    pub fst_q: Quality,
+
     pub lst: T,
+    pub lst_q: Quality,
+
+    pub fst_offset: u32,
+    pub lst_offset: u32,
+
+    pub qual_acc_or: u32,
+    pub qual_acc_and: u32,
 }
 
-impl<T: StorableNum> Block<T> {
+impl<T: StorableNum> BlockMeta<T> {
     pub fn new() -> Self {
         Self {
-            count: 0,
+            count_non_missing: 0,
+            count_valid: 0,
             fst_offset: u32::MAX,
             lst_offset: u32::MIN,
             sum: T::zero(),
@@ -48,111 +65,212 @@ impl<T: StorableNum> Block<T> {
             max: T::min_value(),
             fst: T::zero(),
             lst: T::zero(),
+            qual_acc_or: 0,
+            qual_acc_and: 0xFFFFFFFF,
+            fst_valid: T::zero(),
+            fst_valid_q: Quality::MISSING,
+            lst_valid: T::zero(),
+            lst_valid_q: Quality::MISSING,
+            fst_valid_offset: u32::MAX,
+            lst_valid_offset: u32::MIN,
+            fst_q: Quality::MISSING,
+            lst_q: Quality::MISSING,
         }
     }
 
-    pub fn update_block_meta(
+    // quality acc FLAGS
+    pub const ACC_GOOD: u32 = 1;
+    pub const ACC_BAD: u32 = 1 << 1;
+    pub const ACC_UNCERTAIN: u32 = 1 << 2;
+    pub const ACC_NODATA: u32 = 1 << 3;
+
+    // does a full scan
+    pub fn recalc_block_data_full(
         &mut self,
-        value: T,
-        offset: u32,
-        old_value: &Option<T>,
-        updated_block_data: &[Option<T>],
+        updated_block_data: &[T],
+        updated_quality_data: &[Quality],
     ) {
-        if let Some(old) = old_value {
-            self.sum -= *old;
-        } else {
-            self.count += 1;
-        }
+        // TODO: for simplicity we do a full scan here. once we have the ingest/storage path built out more,
+        // we add running statistics. but lets focus on making progress for now
+        // also our blocks are kinda small, so it will take some time, until we notice this perf wise (famous last words)
 
-        self.sum += value;
+        assert_eq!(updated_block_data.len(), updated_quality_data.len());
+        assert_ne!(updated_block_data.len(), 0);
 
-        let is_append = offset > self.lst_offset;
+        // reset state
+        self.count_non_missing = 0;
+        self.count_valid = 0;
 
-        if self.fst_offset >= offset {
-            self.fst_offset = offset;
-            self.fst = value;
-        }
+        self.sum = T::zero();
+        self.min = T::max_value();
+        self.max = T::min_value();
 
-        if self.lst_offset <= offset {
-            self.lst_offset = offset;
-            self.lst = value;
-        }
+        self.fst_offset = u32::MAX;
+        self.lst_offset = u32::MIN;
+        self.fst = T::zero();
+        self.fst_q = Quality::MISSING;
 
-        if is_append || old_value.is_none() {
-            if self.min > value {
-                self.min = value;
+        self.fst_valid_offset = u32::MAX;
+        self.lst_valid_offset = u32::MIN;
+        self.fst_valid = T::zero();
+        self.fst_valid_q = Quality::MISSING;
+
+        // Reset masks
+        self.qual_acc_or = 0;
+        // Start AND mask with all 1s so the intersection works.
+        // If block is empty, this remains MAX (or you can handle empty case specifically).
+        self.qual_acc_and = u32::MAX;
+
+        for i in 0..updated_block_data.len() {
+            let v = updated_block_data[i];
+            let q = updated_quality_data[i];
+            let idx = i as u32;
+
+            let current_qual_flag = if q.is_missing() {
+                Self::ACC_NODATA
+            } else if q.is_bad() {
+                Self::ACC_BAD
+            } else if q.is_uncertain() {
+                Self::ACC_UNCERTAIN
+            } else {
+                Self::ACC_GOOD
+            };
+
+            self.qual_acc_or |= current_qual_flag;
+            self.qual_acc_and &= current_qual_flag;
+
+            if q.is_missing() {
+                continue;
             }
 
-            if self.max < value {
-                self.max = value;
-            }
-        } else {
-            //if not append && is_overwrite we need to calc min / max again
-            self.min = T::max_value();
-            self.max = T::min_value();
+            // if we are here, we have non missing data
+            self.count_non_missing += 1;
 
-            for i in updated_block_data.iter().filter_map(|x| *x) {
-                if self.min > i {
-                    self.min = i;
+            // fst/lst any qual
+            if idx < self.fst_offset {
+                self.fst_offset = idx;
+                self.fst = v;
+                self.fst_q = q;
+            }
+
+            if idx >= self.lst_offset {
+                self.lst_offset = idx;
+                self.lst = v;
+                self.lst_q = q;
+            }
+
+            // calculate stats for valid (good | uncertain) data
+            if q.is_good() || q.is_uncertain() {
+                self.count_valid += 1;
+                self.sum += v;
+
+                if v < self.min {
+                    self.min = v;
+                }
+                if v > self.max {
+                    self.max = v;
                 }
 
-                if self.max < i {
-                    self.max = i;
+                // fst / lst valid
+                if idx < self.fst_valid_offset {
+                    self.fst_valid_offset = idx;
+                    self.fst_valid = v;
+                    self.fst_valid_q = q;
+                }
+                if idx >= self.lst_valid_offset {
+                    self.lst_valid_offset = idx;
+                    self.lst_valid = v;
+                    self.lst_valid_q = q;
                 }
             }
         }
+
+        // no data -> no min/max
+        if self.count_valid == 0 {
+            self.min = T::zero();
+            self.max = T::zero();
+        }
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Quality(u8);
+
+impl Quality {
+    // LAYOUT (OPC)
+    // QQ_SSSS_LL
+    // QQ -> Major Quality
+    // SSSS -> SubStatus
+    // LL -> Limit
+
+    const GOOD: Self = Self(0b11_0000_00); // 192 (0xC0)
+    const BAD: Self = Self(0b00_0000_00); // 1 (0x00)
+    const UNCERTAIN: Self = Self(0b01_0000_00); // 64 (0x40)
+
+    pub const MISSING: Self = Self(0b10_0000_00); // opc doesnt use 10_SSSS_LL
+
+    // masks
+    pub const MASK_MAJOR: u8 = 0b11_0000_00;
+    pub const MASK_SUB: u8 = 0b00_1110_00;
+    pub const MASK_LIMIT: u8 = 0b00_0001_11;
+
+    pub fn is_good(self) -> bool {
+        (self.0 & Self::MASK_MAJOR) == Self::GOOD.0
+    }
+
+    pub fn is_bad(self) -> bool {
+        (self.0 & Self::MASK_MAJOR) == Self::BAD.0
+    }
+
+    pub fn is_uncertain(self) -> bool {
+        (self.0 & Self::MASK_MAJOR) == Self::UNCERTAIN.0
+    }
+
+    pub fn is_missing(self) -> bool {
+        self.0 == Self::MISSING.0
+    }
+}
+
+impl Default for Quality {
+    fn default() -> Self {
+        Self::GOOD
+    }
+}
+
+impl fmt::Debug for Quality {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_good() {
+            write!(f, "Quality(Good)")
+        } else if self.is_bad() {
+            write!(f, "Quality(Bad bits={:08b})", self.0)
+        } else if self.is_missing() {
+            write!(f, "MISSING")
+        } else {
+            write!(f, "Quality(Uncertain)")
+        }
+    }
+}
+
+impl TryFrom<u8> for Quality {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        // TODO: Add validation
+        Ok(Self(value))
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SizedBlock {
-    F32Block(Block<f32>, Vec<Option<f32>>),
-    F64Block(Block<f64>, Vec<Option<f64>>),
-    I32Block(Block<i32>, Vec<Option<i32>>),
-    I64Block(Block<i64>, Vec<Option<i64>>),
-    U32Block(Block<u32>, Vec<Option<u32>>),
-    U64Block(Block<u64>, Vec<Option<u64>>),
-    U8Block(Block<u8>, Vec<Option<u8>>),
-}
-
-impl SizedBlock {
-    pub fn get_size(&self) -> usize {
-        match self {
-            SizedBlock::F32Block(_, d) => {
-                4 + 4 + 4 + std::mem::size_of::<f32>() * 5 + std::mem::size_of::<f32>() * d.len()
-            }
-            SizedBlock::F64Block(_, d) => {
-                4 + 4 + 4 + std::mem::size_of::<f64>() * 5 + std::mem::size_of::<f64>() * d.len()
-            }
-            SizedBlock::I32Block(_, d) => {
-                4 + 4 + 4 + std::mem::size_of::<i32>() * 5 + std::mem::size_of::<i32>() * d.len()
-            }
-            SizedBlock::I64Block(_, d) => {
-                4 + 4 + 4 + std::mem::size_of::<i64>() * 5 + std::mem::size_of::<i64>() * d.len()
-            }
-            SizedBlock::U32Block(_, d) => {
-                4 + 4 + 4 + std::mem::size_of::<u32>() * 5 + std::mem::size_of::<u32>() * d.len()
-            }
-            SizedBlock::U64Block(_, d) => {
-                4 + 4 + 4 + std::mem::size_of::<u64>() * 5 + std::mem::size_of::<u64>() * d.len()
-            }
-            SizedBlock::U8Block(_, d) => {
-                4 + 4 + 4 + std::mem::size_of::<u8>() * 5 + std::mem::size_of::<u8>() * d.len()
-            }
-        }
-    }
-
-    pub fn get_count_written(&self) -> u32 {
-        match self {
-            SizedBlock::F32Block(b, _) => b.count,
-            SizedBlock::F64Block(b, _) => b.count,
-            SizedBlock::I32Block(b, _) => b.count,
-            SizedBlock::I64Block(b, _) => b.count,
-            SizedBlock::U32Block(b, _) => b.count,
-            SizedBlock::U64Block(b, _) => b.count,
-            SizedBlock::U8Block(b, _) => b.count,
-        }
-    }
+    F32Block(BlockMeta<f32>, Vec<f32>, Vec<Quality>),
+    F64Block(BlockMeta<f64>, Vec<f64>, Vec<Quality>),
+    I32Block(BlockMeta<i32>, Vec<i32>, Vec<Quality>),
+    I64Block(BlockMeta<i64>, Vec<i64>, Vec<Quality>),
+    U32Block(BlockMeta<u32>, Vec<u32>, Vec<Quality>),
+    U64Block(BlockMeta<u64>, Vec<u64>, Vec<Quality>),
+    U8Block(BlockMeta<u8>, Vec<u8>, Vec<Quality>),
 }
 
 #[repr(u64)]

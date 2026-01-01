@@ -6,7 +6,7 @@ use tracing::{debug, info};
 use crate::{
     helpers,
     ingest::ValueVec,
-    meta::{Block, BlockNumber, SeriesId, SeriesMeta, SizedBlock, StorageType},
+    meta::{BlockMeta, BlockNumber, Quality, SeriesId, SeriesMeta, SizedBlock, StorageType},
 };
 
 #[derive(Default, Debug)]
@@ -32,9 +32,11 @@ macro_rules! write_hot_variant {
         $series:expr,     // SeriesMeta
         $block:expr,      // BlockNumber
         $ts:expr,         // Timestamp slice
+        $qs:expr,         // Quality slice
         $items:expr,      // Values slice (e.g., &[f32])
         $Variant:path,    // The Enum Variant (e.g., SizedBlock::F32Block)
-        $Type:ty          // The Native Type (e.g., f32)
+        $Type:ty,         // The Native Type (e.g., f32)
+        $def:expr         // Default Value of the Native type
     ) => {{
         // 1. Lifecycle Management: Rotate, Backfill, or Existing
         let mut current = if $self.live.is_some() {
@@ -44,11 +46,13 @@ macro_rules! write_hot_variant {
 
             if live_block < $block {
                 // Case: Rotation (Newer block arrived)
+                let len = helpers::get_block_length(&$series) as usize;
                 $self.flush_live();
                 $self.live_id = Some($block);
                 $Variant(
-                    Block::new(),
-                    vec![None; helpers::get_block_length(&$series) as usize],
+                    BlockMeta::new(),
+                    vec![$def; len],
+                    vec![Quality::MISSING; len],
                 )
             } else if live_block > $block {
                 // Case: Backfill (Older block arrived) -> Send to Cold Store
@@ -60,26 +64,31 @@ macro_rules! write_hot_variant {
         } else {
             // Case: Cold Start (First block)
             $self.live_id = Some($block);
+            let len = helpers::get_block_length(&$series) as usize;
             $Variant(
-                Block::new(),
-                vec![None; helpers::get_block_length(&$series) as usize],
+                BlockMeta::new(),
+                vec![$def; len],
+                vec![Quality::MISSING; len],
             )
         };
 
         let bl_start = helpers::get_block_start_as_offset(&$series, $block.0);
 
+        assert!($ts.len() == $items.len() && $items.len() == $qs.len());
+
         // 2. The Write Loop
         match &mut current {
-            &mut $Variant(ref mut block_meta, ref mut vals) => {
-                for (t, v) in $ts.iter().zip($items.iter()) {
-                    // Calculate index inside the Fixed Grid
-                    let idx = helpers::get_sample_offset(&$series, *t - bl_start) as usize;
+            &mut $Variant(ref mut block_meta, ref mut vals, ref mut qs) => {
+                for i in 0..$ts.len() {
+                    let v = $items[i];
+                    let t = $ts[i];
+                    let q = $qs[i];
 
-                    // Update Value and Metadata (Min/Max/Count)
-                    let old = vals[idx];
-                    vals[idx] = Some(*v);
-                    block_meta.update_block_meta(*v, idx as u32, &old, vals.as_slice());
+                    let idx = helpers::get_sample_offset(&$series, t - bl_start) as usize;
+                    vals[idx] = v;
+                    qs[idx] = q;
                 }
+                block_meta.recalc_block_data_full(vals, qs);
             }
             other => {
                 // Safety Panic: This should never happen if SeriesMeta aligns with Data
@@ -115,6 +124,7 @@ impl HotData {
         series: &SeriesMeta,
         block: BlockNumber,
         ts: &[u64],
+        qs: &[Quality],
         vals: &ValueVec,
         val_range: Range<usize>,
     ) -> WriteResult {
@@ -131,9 +141,11 @@ impl HotData {
                     series,
                     block,
                     ts,
-                    &items[val_range],
+                    qs,
+                    &items[val_range.clone()],
                     SizedBlock::F32Block,
-                    f32
+                    f32,
+                    f32::default()
                 )
             }
             (StorageType::Float64, ValueVec::F64(items)) => {
@@ -142,9 +154,11 @@ impl HotData {
                     series,
                     block,
                     ts,
-                    &items[val_range],
+                    qs,
+                    &items[val_range.clone()],
                     SizedBlock::F64Block,
-                    f64
+                    f64,
+                    f64::default()
                 )
             }
             (StorageType::Int32, ValueVec::I32(items)) => {
@@ -153,9 +167,11 @@ impl HotData {
                     series,
                     block,
                     ts,
-                    &items[val_range],
+                    qs,
+                    &items[val_range.clone()],
                     SizedBlock::I32Block,
-                    i32
+                    i32,
+                    i32::default()
                 )
             }
             (StorageType::Int64, ValueVec::I64(items)) => {
@@ -164,9 +180,11 @@ impl HotData {
                     series,
                     block,
                     ts,
-                    &items[val_range],
+                    qs,
+                    &items[val_range.clone()],
                     SizedBlock::I64Block,
-                    i64
+                    i64,
+                    i64::default()
                 )
             }
             (StorageType::UInt32, ValueVec::U32(items)) => {
@@ -175,9 +193,11 @@ impl HotData {
                     series,
                     block,
                     ts,
-                    &items[val_range],
+                    qs,
+                    &items[val_range.clone()],
                     SizedBlock::U32Block,
-                    u32
+                    u32,
+                    u32::default()
                 )
             }
             (StorageType::UInt64, ValueVec::U64(items)) => {
@@ -186,9 +206,11 @@ impl HotData {
                     series,
                     block,
                     ts,
-                    &items[val_range],
+                    qs,
+                    &items[val_range.clone()],
                     SizedBlock::U64Block,
-                    u64
+                    u64,
+                    u64::default()
                 )
             }
             (StorageType::Enumeration, ValueVec::Enum(items)) => {
@@ -197,9 +219,11 @@ impl HotData {
                     series,
                     block,
                     ts,
-                    &items[val_range],
+                    qs,
+                    &items[val_range.clone()],
                     SizedBlock::U8Block,
-                    u8
+                    u8,
+                    u8::default()
                 )
             }
             (st, val) => {
@@ -252,19 +276,20 @@ impl HotSet {
         block: BlockNumber,
         ts: &[u64],
         vals: &ValueVec,
+        qs: &[Quality],
         val_range: Range<usize>,
     ) -> WriteResult {
         match self.data.try_get_mut(&series.id) {
             dashmap::try_result::TryResult::Present(mut hd) => {
                 let wr = hd
                     .value_mut()
-                    .write_into_block(series, block, ts, vals, val_range);
+                    .write_into_block(series, block, ts, qs, vals, val_range);
                 debug!("case Present: {:?}", hd.value());
                 wr
             }
             dashmap::try_result::TryResult::Absent => {
                 let mut hd = HotData::default();
-                let wr = hd.write_into_block(series, block, ts, vals, val_range);
+                let wr = hd.write_into_block(series, block, ts, qs, vals, val_range);
                 debug!("case Absent: {hd:?}");
                 self.data.insert(series.id, hd);
                 wr

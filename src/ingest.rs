@@ -3,13 +3,12 @@ use std::ops::Range;
 use axum::{Json, extract::State};
 use serde::Deserialize;
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::{
     AppState,
     api::ApiError,
-    helpers,
-    meta::{Block, BlockNumber, MetaStore, SeriesId, SeriesMeta, SizedBlock},
+    meta::{BlockNumber, MetaStore, Quality, SeriesId, SeriesMeta},
 };
 
 #[derive(Debug, Error)]
@@ -40,13 +39,14 @@ pub struct BatchIngest {
     // assume UNIX TS in ms (aka ms after UNIX EPOCH) for now
     // once we have ICU support, we'll also support parsing ts.
     pub ts: Vec<u64>,
+    pub qs: Vec<Quality>,
     #[serde(flatten)]
     pub vals: ValueVec,
 }
 
 impl BatchIngest {
     pub fn validate(&self) -> Result<(), IngestError> {
-        if self.ts.len() != self.vals.len() {
+        if self.ts.len() != self.vals.len() && self.vals.len() == self.qs.len() {
             warn!("length mismatch");
             return Err(IngestError::LengthMismatch);
         }
@@ -171,7 +171,7 @@ async fn write_chunk(
     req: &BatchIngest,
     range: Range<usize>,
 ) -> Result<(), ApiError> {
-    const MAX_RETRIES: u32 = 3;
+    const MAX_RETRIES: u32 = 3; // TODO: settings!
     let mut attempt = 0;
 
     loop {
@@ -180,6 +180,7 @@ async fn write_chunk(
             block_id,
             &req.ts[range.clone()],
             &req.vals,
+            &req.qs[range.clone()],
             range.clone(),
         );
 
@@ -187,14 +188,11 @@ async fn write_chunk(
             crate::hot::WriteResult::Ok { .. } => return Ok(()),
             crate::hot::WriteResult::Busy => {
                 attempt += 1;
+                warn!("WriteResult::Busy");
                 if attempt >= MAX_RETRIES {
                     return Err(ApiError::ResourceLocked);
                 }
                 // Yield the async task to let the lock holder finish
-                // std::thread::yield_now() is for sync threads
-                //  is better here
-                // But since we are in a sync function here, you might need to make write_chunk async
-                // OR just spin loop hints:
                 tokio::task::yield_now().await;
             }
             crate::hot::WriteResult::NeedsColdStore => todo!(),
