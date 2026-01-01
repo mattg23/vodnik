@@ -13,7 +13,7 @@ Content-Type: application/json
   "series": 14,
   "ts": [1767111429344],
   "values":  [1337],
-  "qs": [192],
+  "qs": [8],
   "type": "f32"
 }
 

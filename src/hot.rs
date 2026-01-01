@@ -88,6 +88,7 @@ macro_rules! write_hot_variant {
                     vals[idx] = v;
                     qs[idx] = q;
                 }
+                // TODO: do running stats instead of full recalc
                 block_meta.recalc_block_data_full(vals, qs);
             }
             other => {

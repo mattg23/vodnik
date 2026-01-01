@@ -229,7 +229,7 @@ impl Quality {
     }
 
     pub fn is_missing(self) -> bool {
-        self.0 == Self::MISSING.0
+        (self.0 & Self::MASK_MAJOR) == Self::MISSING.0
     }
 }
 

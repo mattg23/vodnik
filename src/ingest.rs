@@ -62,7 +62,7 @@ impl BatchIngest {
             let t2 = window[1];
             if t1 > t2 {
                 return Err(IngestError::InvalidTimestamp(
-                    "timestamps need to sorted in ascending order".to_string(),
+                    "timestamps must be sorted in ascending order".to_string(),
                 ));
             }
         }
