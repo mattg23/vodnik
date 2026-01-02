@@ -1,0 +1,41 @@
+Idea:
+
+Open source time series database, which is suitable for industrial/sensor data.
+
+Main features planned:
+- reasonably fast aggregations across multi year timespans
+- backfill as a first-class citizen, with intentional delete and overwrite of historical data and marking this data as manually deleted/overwritten
+- "quality as data" - in addition to value/timestamp every value has a "quality"
+- long retention period without massive perf degradation (or requiring a large cluster of machines)
+- S3 compatible
+- Handling of timezones and aggregations in series-local time (series1 has data from Chile, series2 has data from Sydney; what is the avg(series1,series2) at 6AM?)
+
+There are a lot of other TSDB which are great, but most are built for monitoring of servers, cluster or networks.
+The main use case being anomaly detection, alerting or populating dashboards in real time.
+Bolting the features above onto any of those existing databases is often not a good fit, since the internal model is inherently built for a different use case.
+
+How it works (or will work):
+- We work with a fixed time grid.
+  On creating a new series (sometimes called tag in other db) the user must specify the minimum sample resolution sample_t.
+  We store values into blocks, where each block holds block_n samples and each sample covers the duration sample_t.
+  This means the timestamp of an individual value can be computed on the fly, and does not need to be stored.
+  If two samples arrive inside the same sample_t, the last write wins (for now).
+- Block meta:
+  We store block level metadata (min,max,sum,first,last etc..).
+  This allows us to answer (some) queries with a query range larger than block_n * sample_t without reading all the data, just by getting the block meta data.
+  By aligning blocks with commonly used time boundaries (hours, 15 min..) we can further reduce the requirements to read boundary blocks at all.
+- Storage:
+  We'll group multiple [compressed] blocks into segments later, to get some reasonable file sizes for S3.
+  This also means backfill, delete and update will be COW on the block/segment level.
+  For metadata we'll use SQLite for now, probably updating to PostgreSQL later.
+  A WAL will be used to get some resilience against crashes.
+
+
+Other ideas for the future:
+- support for engineering units
+- high/low limits for series values
+- different compression algorithm per series
+- ts pattern matching (golden batch)
+- deterministic/capped memory usage
+- different ingestion protocols
+

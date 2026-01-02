@@ -149,18 +149,18 @@ pub struct SqlMetaStore {
 }
 
 impl SqlMetaStore {
-    fn new(db: DatabaseConnection) -> Self {
+    pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
     }
+}
 
-    pub async fn create(db_url: &str) -> Result<Self, MetaStoreError> {
-        match Database::connect(db_url).await {
-            Ok(_db) => {
-                info!("Connected to metadata database at {}", db_url);
-                Ok(Self::new(_db))
-            }
-            Err(e) => Err(orm_err(e)),
+pub async fn create(db_url: &str) -> Result<DatabaseConnection, MetaStoreError> {
+    match Database::connect(db_url).await {
+        Ok(_db) => {
+            info!("Connected to metadata database at {}", db_url);
+            Ok(_db)
         }
+        Err(e) => Err(orm_err(e)),
     }
 }
 

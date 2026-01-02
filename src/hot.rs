@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use dashmap::DashMap;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::{
     helpers,
@@ -49,6 +49,7 @@ macro_rules! write_hot_variant {
                 let len = helpers::get_block_length(&$series) as usize;
                 $self.flush_live();
                 $self.live_id = Some($block);
+                info!("rotated live block for series {}", $series.id);
                 $Variant(
                     BlockMeta::new(),
                     vec![$def; len],
@@ -241,6 +242,10 @@ impl HotData {
         self.flushing.insert(self.live_id.unwrap(), live);
         // TODO: Notify external system to store block & update meta data
     }
+
+    fn take_flushing_block(&mut self, block: BlockNumber) -> Option<SizedBlock> {
+        self.flushing.remove(&block)
+    }
 }
 
 pub(crate) struct HotSet {
@@ -271,6 +276,20 @@ impl HotSet {
         }
     }
 
+    pub(crate) fn take_flushing_block(
+        &self,
+        series: SeriesId,
+        block: BlockNumber,
+    ) -> Option<SizedBlock> {
+        match self.data.try_get_mut(&series) {
+            dashmap::try_result::TryResult::Present(mut hd) => {
+                hd.value_mut().take_flushing_block(block)
+            }
+            dashmap::try_result::TryResult::Absent => None,
+            dashmap::try_result::TryResult::Locked => None,
+        }
+    }
+
     pub(crate) fn write(
         &self,
         series: &SeriesMeta,
@@ -285,13 +304,13 @@ impl HotSet {
                 let wr = hd
                     .value_mut()
                     .write_into_block(series, block, ts, qs, vals, val_range);
-                debug!("case Present: {:?}", hd.value());
+                trace!("case Present: {:?}", hd.value());
                 wr
             }
             dashmap::try_result::TryResult::Absent => {
                 let mut hd = HotData::default();
                 let wr = hd.write_into_block(series, block, ts, qs, vals, val_range);
-                debug!("case Absent: {hd:?}");
+                trace!("case Absent: {hd:?}");
                 self.data.insert(series.id, hd);
                 wr
             }

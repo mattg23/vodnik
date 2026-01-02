@@ -13,7 +13,8 @@ use crate::{
     AppState,
     crud::{create_series, delete_series, read_series, update_series},
     ingest::batch_ingest,
-    meta::MetaStoreError,
+    meta::{MetaStoreError, block::BlockMetaStoreError},
+    query::read_single_block,
 };
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -23,6 +24,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/series/{id}", get(read_series))
         .route("/series/{id}", patch(update_series))
         .route("/series/{id}", delete(delete_series))
+        .route(
+            "/series/{series_id}/block/{block_id}",
+            get(read_single_block),
+        )
 }
 
 #[derive(Debug, Error)]
@@ -79,5 +84,26 @@ impl From<opendal::Error> for ApiError {
     fn from(err: opendal::Error) -> Self {
         error!("opendal::Error: {err:?}");
         as_internal_err(err)
+    }
+}
+
+impl From<BlockMetaStoreError> for ApiError {
+    fn from(err: BlockMetaStoreError) -> Self {
+        match err {
+            BlockMetaStoreError::BlockNotFound(series_id, block_id) => ApiError::NotFound(format!(
+                "Block not found: series_id={}, block_id={}",
+                series_id, block_id
+            )),
+
+            BlockMetaStoreError::DbError(db_err) => {
+                error!("Internal DB Error: {:?}", db_err);
+                ApiError::Internal
+            }
+
+            BlockMetaStoreError::SerializationError(msg) => {
+                error!("Block Serialization Error: {}", msg);
+                ApiError::Internal
+            }
+        }
     }
 }

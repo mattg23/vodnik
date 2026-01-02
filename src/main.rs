@@ -1,19 +1,14 @@
-use std::{
-    env,
-    sync::{Arc, Mutex},
-};
+use std::{env, sync::Arc};
 
 use axum::{Router, routing::get};
 use opendal::Operator;
-use tower_http::{
-    LatencyUnit,
-    trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
-};
-use tracing::Level;
-//use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
+use tracing_subscriber::{EnvFilter, prelude::*};
 
-use crate::{hot::HotSet, meta::store::SqlMetaStore};
+use crate::{
+    hot::HotSet,
+    meta::{block::BlockMetaStore, store::SqlMetaStore},
+};
 
 mod api;
 mod crud;
@@ -21,6 +16,8 @@ mod helpers;
 mod hot;
 mod ingest;
 mod meta;
+mod persistence;
+mod query;
 
 pub const VODNIK_ASCII: &str = r#"
          ~~~~~~~
@@ -38,6 +35,7 @@ pub const VODNIK_ASCII: &str = r#"
 #[derive(Clone, Debug)]
 struct AppState {
     pub meta_store: SqlMetaStore,
+    pub block_meta: BlockMetaStore,
     pub storage: Operator,
     pub hot: Arc<HotSet>,
 }
@@ -53,7 +51,11 @@ async fn main() -> anyhow::Result<()> {
 
     let db_url =
         env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://db.sqlite?mode=rwc".to_string());
-    let store = SqlMetaStore::create(&db_url).await?;
+
+    let db = meta::store::create(&db_url).await?;
+
+    let store = SqlMetaStore::new(db.clone());
+    let block_store = BlockMetaStore::new(db);
 
     let mut builder = opendal::services::Fs::default();
     builder = builder.root("/tmp/vodnik_test");
@@ -66,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         meta_store: store,
         storage: op,
+        block_meta: block_store,
         hot: Arc::new(HotSet::new()),
     };
 

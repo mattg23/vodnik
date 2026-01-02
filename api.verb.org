@@ -11,9 +11,9 @@ Content-Type: application/json
 
 {
   "series": 14,
-  "ts": [1767111429344],
+  "ts": [1779111429344],
   "values":  [1337],
-  "qs": [8],
+  "qs": [192],
   "type": "f32"
 }
 
@@ -59,6 +59,8 @@ Content-Type: application/json
   ]
 }
 
-** delete series                                                       :verb:
-delete /series/1
+** read a single block                                                 :verb:
+get /series/14/block/987284
 Content-Type: application/json
+
+

@@ -1,3 +1,4 @@
+pub mod block;
 pub mod store;
 
 use num_traits::{Bounded, Num, NumAssign, NumCast};
@@ -26,6 +27,39 @@ macro_rules! impl_safe_add_int {
 
 impl_safe_add_int!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
 
+// Helper to handle the BLOB storage for Sums (i128, u128, f64)
+pub trait BinaryAccumulator: Sized {
+    fn to_blob(&self) -> Vec<u8>;
+    fn from_blob(bytes: &[u8]) -> Result<Self, String>;
+}
+
+macro_rules! impl_binary_accumulator {
+    // Matches: i128, 16; f64, 8; ...
+    ($($t:ty, $size:literal),* $(,)?) => {
+        $(
+            impl BinaryAccumulator for $t {
+                fn to_blob(&self) -> Vec<u8> {
+                    self.to_le_bytes().to_vec()
+                }
+
+                fn from_blob(bytes: &[u8]) -> Result<Self, String> {
+                    let b: [u8; $size] = bytes.try_into().map_err(|_| {
+                        format!(
+                            "Invalid blob len for {}: expected {}, got {}",
+                            stringify!($t),
+                            $size,
+                            bytes.len()
+                        )
+                    })?;
+                    Ok(Self::from_le_bytes(b))
+                }
+            }
+        )*
+    };
+}
+
+impl_binary_accumulator!(f64, 8, i64, 8, u64, 8, i128, 16, u128, 16);
+
 // for f64/f32 NaN is not allowed. this should be checked at the boundary
 // at ingestion time. StorableNum assumes a non-NaN value for floating point types
 pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy {
@@ -36,7 +70,8 @@ pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy {
         + NumAssign
         + SafeAdd
         + std::fmt::Debug
-        + Default;
+        + Default
+        + BinaryAccumulator;
 
     fn to_acc(self) -> Self::Accumulator;
 }
@@ -102,7 +137,9 @@ impl StorableNum for u8 {
     }
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BlockMeta<T: StorableNum> {
     pub count_non_missing: u32,
     pub count_valid: u32, // aka good | uncertain
@@ -134,6 +171,8 @@ pub struct BlockMeta<T: StorableNum> {
 
     pub qual_acc_or: u32,
     pub qual_acc_and: u32,
+
+    pub object_key: String,
 }
 
 impl<T: StorableNum> BlockMeta<T> {
@@ -158,6 +197,7 @@ impl<T: StorableNum> BlockMeta<T> {
             lst_valid_offset: u32::MIN,
             fst_q: Quality::MISSING,
             lst_q: Quality::MISSING,
+            object_key: String::default(),
         }
     }
 
@@ -200,8 +240,6 @@ impl<T: StorableNum> BlockMeta<T> {
 
         // Reset masks
         self.qual_acc_or = 0;
-        // Start AND mask with all 1s so the intersection works.
-        // If block is empty, this remains MAX (or you can handle empty case specifically).
         self.qual_acc_and = u32::MAX;
 
         for i in 0..updated_block_data.len() {
@@ -277,7 +315,18 @@ impl<T: StorableNum> BlockMeta<T> {
 }
 
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[serde(transparent)]
 pub struct Quality(u8);
 
@@ -345,7 +394,7 @@ impl TryFrom<u8> for Quality {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum SizedBlock {
     F32Block(BlockMeta<f32>, Vec<f32>, Vec<Quality>),
     F64Block(BlockMeta<f64>, Vec<f64>, Vec<Quality>),

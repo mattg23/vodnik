@@ -3,12 +3,13 @@ use std::ops::Range;
 use axum::{Json, extract::State};
 use serde::Deserialize;
 use thiserror::Error;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     AppState,
     api::ApiError,
     meta::{BlockNumber, MetaStore, Quality, SeriesId, SeriesMeta},
+    persistence,
 };
 
 #[derive(Debug, Error)]
@@ -66,6 +67,8 @@ impl BatchIngest {
                 ));
             }
         }
+
+        // TODO: for float values we need to reject NaN
 
         Ok(())
     }
@@ -185,7 +188,16 @@ async fn write_chunk(
         );
 
         match res {
-            crate::hot::WriteResult::Ok { .. } => return Ok(()),
+            crate::hot::WriteResult::Ok { flushing, .. } => {
+                if !flushing.is_empty() {
+                    let s = state.clone();
+                    let sid = series.id;
+                    tokio::spawn(async move {
+                        flush_background(&s, sid, flushing).await;
+                    });
+                }
+                return Ok(());
+            }
             crate::hot::WriteResult::Busy => {
                 attempt += 1;
                 warn!("WriteResult::Busy");
@@ -196,6 +208,24 @@ async fn write_chunk(
                 tokio::task::yield_now().await;
             }
             crate::hot::WriteResult::NeedsColdStore => todo!(),
+        }
+    }
+}
+
+async fn flush_background(state: &AppState, series: SeriesId, blocks_to_flush: Vec<BlockNumber>) {
+    for block_id in blocks_to_flush.iter() {
+        if let Some(block) = state.hot.take_flushing_block(series, *block_id) {
+            let r = persistence::flush_block(
+                &state.storage,
+                &state.block_meta,
+                series,
+                *block_id,
+                &block,
+            )
+            .await;
+            if r.is_ok() {
+                info!("flushed block {block_id:?} for series {series}");
+            }
         }
     }
 }
