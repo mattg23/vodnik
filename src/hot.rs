@@ -73,36 +73,10 @@ macro_rules! write_hot_variant {
             )
         };
 
-        let bl_start = helpers::get_block_start_as_offset(&$series, $block.0);
+        // write to the block
+        current.write::<$Type>($series, $block, $ts, $items, $qs);
 
-        assert!($ts.len() == $items.len() && $items.len() == $qs.len());
-
-        // 2. The Write Loop
-        match &mut current {
-            &mut $Variant(ref mut block_meta, ref mut vals, ref mut qs) => {
-                for i in 0..$ts.len() {
-                    let v = $items[i];
-                    let t = $ts[i];
-                    let q = $qs[i];
-
-                    let idx = helpers::get_sample_offset(&$series, t - bl_start) as usize;
-                    vals[idx] = v;
-                    qs[idx] = q;
-                }
-                // TODO: do running stats instead of full recalc
-                block_meta.recalc_block_data_full(vals, qs);
-            }
-            other => {
-                // Safety Panic: This should never happen if SeriesMeta aligns with Data
-                unreachable!(
-                    "Type Mismatch in HotSet: Expected {}, got {}",
-                    stringify!($Variant),
-                    std::any::type_name_of_val(&other)
-                );
-            }
-        };
-
-        // 3. State Restore
+        // State Restore
         $self.live = Some(current);
         $self.live_id = Some($block);
 

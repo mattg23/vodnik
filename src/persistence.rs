@@ -1,13 +1,14 @@
 use crate::{
     api::ApiError,
+    helpers,
     meta::{
-        ArchivedSizedBlock, BlockMeta, BlockNumber, SeriesId, SizedBlock, StorableNum,
+        ArchivedSizedBlock, BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, SizedBlock,
         block::BlockMetaStore,
     },
 };
 use opendal::Operator;
 use rkyv::{deserialize, rancor};
-use tracing::error;
+use tracing::{debug, error};
 use ulid::Ulid;
 
 pub async fn flush_block(
@@ -22,7 +23,7 @@ pub async fn flush_block(
         ApiError::Internal
     })?;
 
-    // Format: data/{series_id}/{block_id}_{uuid}.blk
+    // Format: data/{series_id % 100}/{series_id}/{block_id}_{uuid}.blk
     let path_pref = series_id.0.get() % 100u64;
     let write_id = Ulid::new();
     let object_key = format!(
@@ -34,6 +35,9 @@ pub async fn flush_block(
     // TODO: this creates a copy, fine for now. we prob write our own serializer later
     //       but atm we are experimenting with the internal structure
     let bytes = bytes.to_vec();
+
+    // TODO: On S3 we need to know when the flushed block is available for read (research).
+    //       maybe we need to postpone updating the metadata a bit
     op.write(&object_key, bytes).await.map_err(|e| {
         error!("error writing to storage: {:?}", e);
         ApiError::Internal
@@ -91,4 +95,36 @@ pub async fn read_block_from_storage(
     }
 
     Ok(block)
+}
+
+pub(crate) async fn write_cold<T: BlockWritable>(
+    op: &Operator,
+    db: &BlockMetaStore,
+    series: &SeriesMeta,
+    block: BlockNumber,
+    ts: &[u64],
+    qs: &[Quality],
+    vals: &[T],
+) -> Result<(), ApiError> {
+    debug!(
+        "write_bold:: Series={}, Block={:?}, #samples={}",
+        series.id,
+        &block,
+        ts.len()
+    );
+
+    let mut block_to_write = match read_block_from_storage(op, db, series.id, block).await {
+        Ok(b) => b,
+        Err(ApiError::NotFound(_)) => {
+            let len = helpers::get_block_length(&series) as usize;
+            T::new_sized_block(len)
+        }
+        Err(e) => {
+            error!("{e:?}");
+            return Err(e);
+        }
+    };
+
+    block_to_write.write(series, block, ts, vals, qs);
+    flush_block(op, db, series.id, block, &block_to_write).await
 }

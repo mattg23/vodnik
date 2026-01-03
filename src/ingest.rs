@@ -8,8 +8,8 @@ use tracing::{info, warn};
 use crate::{
     AppState,
     api::ApiError,
-    meta::{BlockNumber, MetaStore, Quality, SeriesId, SeriesMeta},
-    persistence,
+    meta::{BlockNumber, MetaStore, Quality, SeriesId, SeriesMeta, StorageType},
+    persistence::{self, write_cold},
 };
 
 #[derive(Debug, Error)]
@@ -71,6 +71,19 @@ impl BatchIngest {
         // TODO: for float values we need to reject NaN
 
         Ok(())
+    }
+
+    pub fn check_type(&self, stype: StorageType) -> Result<(), IngestError> {
+        match (&self.vals, stype) {
+            (ValueVec::F32(_), StorageType::Float32) => Ok(()),
+            (ValueVec::F64(_), StorageType::Float64) => Ok(()),
+            (ValueVec::I32(_), StorageType::Int32) => Ok(()),
+            (ValueVec::I64(_), StorageType::Int64) => Ok(()),
+            (ValueVec::U32(_), StorageType::UInt32) => Ok(()),
+            (ValueVec::U64(_), StorageType::UInt64) => Ok(()),
+            (ValueVec::Enum(_), StorageType::Enumeration) => Ok(()),
+            _ => Err(IngestError::TypeMismatch),
+        }
     }
 }
 
@@ -136,6 +149,9 @@ pub(crate) async fn batch_ingest(
         .get(req.series)
         .await
         .map_err(crate::meta::into_api_error)?;
+
+    req.check_type(series.storage_type)?;
+
     let mut start_index = 0;
     let mut current_block = crate::helpers::get_block_id(&series, req.ts[0]) as usize;
 
@@ -207,7 +223,96 @@ async fn write_chunk(
                 // Yield the async task to let the lock holder finish
                 tokio::task::yield_now().await;
             }
-            crate::hot::WriteResult::NeedsColdStore => todo!(),
+            crate::hot::WriteResult::NeedsColdStore => {
+                let cold_write_result = match &req.vals {
+                    ValueVec::F32(items) => {
+                        write_cold(
+                            &state.storage,
+                            &state.block_meta,
+                            series,
+                            block_id,
+                            &req.ts[range.clone()],
+                            &req.qs[range.clone()],
+                            &items[range.clone()],
+                        )
+                        .await
+                    }
+
+                    ValueVec::F64(items) => {
+                        write_cold(
+                            &state.storage,
+                            &state.block_meta,
+                            series,
+                            block_id,
+                            &req.ts[range.clone()],
+                            &req.qs[range.clone()],
+                            &items[range.clone()],
+                        )
+                        .await
+                    }
+                    ValueVec::I32(items) => {
+                        write_cold(
+                            &state.storage,
+                            &state.block_meta,
+                            series,
+                            block_id,
+                            &req.ts[range.clone()],
+                            &req.qs[range.clone()],
+                            &items[range.clone()],
+                        )
+                        .await
+                    }
+                    ValueVec::I64(items) => {
+                        write_cold(
+                            &state.storage,
+                            &state.block_meta,
+                            series,
+                            block_id,
+                            &req.ts[range.clone()],
+                            &req.qs[range.clone()],
+                            &items[range.clone()],
+                        )
+                        .await
+                    }
+                    ValueVec::U32(items) => {
+                        write_cold(
+                            &state.storage,
+                            &state.block_meta,
+                            series,
+                            block_id,
+                            &req.ts[range.clone()],
+                            &req.qs[range.clone()],
+                            &items[range.clone()],
+                        )
+                        .await
+                    }
+                    ValueVec::U64(items) => {
+                        write_cold(
+                            &state.storage,
+                            &state.block_meta,
+                            series,
+                            block_id,
+                            &req.ts[range.clone()],
+                            &req.qs[range.clone()],
+                            &items[range.clone()],
+                        )
+                        .await
+                    }
+                    ValueVec::Enum(items) => {
+                        write_cold(
+                            &state.storage,
+                            &state.block_meta,
+                            series,
+                            block_id,
+                            &req.ts[range.clone()],
+                            &req.qs[range.clone()],
+                            &items[range.clone()],
+                        )
+                        .await
+                    }
+                };
+                return cold_write_result;
+            }
         }
     }
 }

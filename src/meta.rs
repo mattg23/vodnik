@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, num::NonZero};
 use thiserror::Error;
 
-use crate::api::ApiError;
+use crate::{api::ApiError, helpers};
 
 pub trait SafeAdd: Copy {
     fn safe_add(self, other: Self) -> Self;
@@ -403,6 +403,87 @@ pub enum SizedBlock {
     U32Block(BlockMeta<u32>, Vec<u32>, Vec<Quality>),
     U64Block(BlockMeta<u64>, Vec<u64>, Vec<Quality>),
     U8Block(BlockMeta<u8>, Vec<u8>, Vec<Quality>),
+}
+
+pub trait BlockWritable: StorableNum {
+    fn write_to_block(
+        block: &mut SizedBlock,
+        series: &SeriesMeta,
+        block_num: BlockNumber,
+        ts: &[u64],
+        new_vals: &[Self],
+        new_qs: &[Quality],
+    );
+
+    fn new_sized_block(len: usize) -> SizedBlock;
+}
+
+macro_rules! impl_block_data_type {
+    ($type:ty, $variant:ident) => {
+        impl BlockWritable for $type {
+            fn write_to_block(
+                block: &mut SizedBlock,
+                series: &SeriesMeta,
+                block_num: BlockNumber,
+                ts: &[u64],
+                new_vals: &[Self],
+                new_qs: &[Quality],
+            ) {
+                assert!(ts.len() == new_vals.len() && new_vals.len() == new_qs.len());
+
+                match block {
+                    SizedBlock::$variant(block_meta, vals, qs) => {
+                        let bl_start = helpers::get_block_start_as_offset(series, block_num.0);
+
+                        for i in 0..ts.len() {
+                            let idx = helpers::get_sample_offset(series, ts[i] - bl_start) as usize;
+
+                            vals[idx] = new_vals[i];
+                            qs[idx] = new_qs[i];
+                        }
+                        // TODO: do running stats instead of full recalc
+                        block_meta.recalc_block_data_full(vals, qs);
+                    }
+                    other => {
+                        unreachable!(
+                            "Type Mismatch in HotSet: Expected {}, got {}",
+                            stringify!($variant),
+                            std::any::type_name_of_val(&other)
+                        );
+                    }
+                }
+            }
+
+            fn new_sized_block(len: usize) -> SizedBlock {
+                SizedBlock::$variant(BlockMeta::new(), vec![Default::default();len], vec![Quality::MISSING;len])
+            }
+        }
+    };
+}
+
+impl_block_data_type!(f32, F32Block);
+impl_block_data_type!(f64, F64Block);
+impl_block_data_type!(i32, I32Block);
+impl_block_data_type!(i64, I64Block);
+impl_block_data_type!(u32, U32Block);
+impl_block_data_type!(u64, U64Block);
+impl_block_data_type!(u8, U8Block);
+
+impl SizedBlock {
+    pub fn write<T: BlockWritable>(
+        &mut self,
+        series: &SeriesMeta,
+        block: BlockNumber,
+        ts: &[u64],
+        new_vals: &[T],
+        new_qs: &[Quality],
+    ) {
+        T::write_to_block(self, series, block, ts, new_vals, new_qs);
+    }
+
+    pub fn new<T: BlockWritable>(len: usize) -> SizedBlock {
+        T::new_sized_block(len)
+    }
 }
 
 #[repr(u64)]
