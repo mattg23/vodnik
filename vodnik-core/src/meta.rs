@@ -1,12 +1,9 @@
-pub mod block;
-pub mod store;
-
 use num_traits::{Bounded, Num, NumAssign, NumCast};
 use serde::{Deserialize, Serialize};
 use std::{fmt, num::NonZero};
 use thiserror::Error;
 
-use crate::{api::ApiError, helpers};
+use crate::helpers;
 
 pub trait SafeAdd: Copy {
     fn safe_add(self, other: Self) -> Self;
@@ -328,7 +325,7 @@ impl<T: StorableNum> BlockMeta<T> {
     rkyv::Deserialize,
 )]
 #[serde(transparent)]
-pub struct Quality(u8);
+pub struct Quality(pub u8);
 
 impl Quality {
     // LAYOUT (OPC)
@@ -455,7 +452,11 @@ macro_rules! impl_block_data_type {
             }
 
             fn new_sized_block(len: usize) -> SizedBlock {
-                SizedBlock::$variant(BlockMeta::new(), vec![Default::default();len], vec![Quality::MISSING;len])
+                SizedBlock::$variant(
+                    BlockMeta::new(),
+                    vec![Default::default(); len],
+                    vec![Quality::MISSING; len],
+                )
             }
         }
     };
@@ -561,20 +562,6 @@ pub struct SeriesMeta {
     pub labels: Vec<Label>,
 }
 
-#[derive(Error, Debug)]
-pub enum MetaStoreError {
-    #[error("series {0} already exists.")]
-    Duplicate(SeriesId),
-    #[error("series {0} not found")]
-    NotFound(SeriesId),
-    #[error(transparent)]
-    Unknown(#[from] anyhow::Error),
-}
-
-pub(crate) fn into_api_error(e: MetaStoreError) -> ApiError {
-    e.into()
-}
-
 #[derive(Debug)]
 pub struct NonEmptySlice<'a, T>(&'a [T]);
 
@@ -594,20 +581,4 @@ impl<'a, T> TryFrom<&'a [T]> for NonEmptySlice<'a, T> {
             Ok(NonEmptySlice(slice))
         }
     }
-}
-
-pub trait MetaStore {
-    async fn create(&self, series: &SeriesMeta) -> Result<SeriesId, MetaStoreError>;
-    async fn update(&self, series: &SeriesMeta) -> Result<(), MetaStoreError>;
-    async fn delete(&self, id: SeriesId) -> Result<(), MetaStoreError>;
-    async fn get(&self, id: SeriesId) -> Result<SeriesMeta, MetaStoreError>;
-    async fn get_all(&self) -> Result<Vec<SeriesMeta>, MetaStoreError>;
-    async fn match_any(
-        &self,
-        labels: NonEmptySlice<Label>,
-    ) -> Result<Vec<SeriesMeta>, MetaStoreError>;
-    async fn match_all(
-        &self,
-        labels: NonEmptySlice<Label>,
-    ) -> Result<Vec<SeriesMeta>, MetaStoreError>;
 }

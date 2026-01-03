@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use thiserror::Error;
 
-use crate::meta::{BinaryAccumulator, BlockMeta, BlockNumber, Quality, SeriesId, StorableNum};
+use vodnik_core::meta::{
+    BinaryAccumulator, BlockMeta, BlockNumber, Quality, SeriesId, StorableNum,
+};
 
 #[derive(Error, Debug)]
 pub enum BlockMetaStoreError {

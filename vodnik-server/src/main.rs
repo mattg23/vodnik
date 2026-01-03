@@ -10,27 +10,15 @@ use crate::{
     meta::{block::BlockMetaStore, store::SqlMetaStore},
 };
 
+use vodnik_core::VODNIK_ASCII;
+
 mod api;
 mod crud;
-mod helpers;
 mod hot;
 mod ingest;
 mod meta;
 mod persistence;
 mod query;
-
-pub const VODNIK_ASCII: &str = r#"
-         ~~~~~~~
-     ~~~  VODNÍK  ~~~
-         ~~~~~~~
-           ___
-         .(o o).
-     _oOO--(_)--OOo_
-        /  /~~~\  \
-       |  | ~~~ |  |
-        \  \____/  /
-         '--.___.--'
-"#;
 
 #[derive(Clone, Debug)]
 struct AppState {

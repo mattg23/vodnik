@@ -1,16 +1,15 @@
 use std::ops::Range;
 
+use crate::{
+    AppState,
+    api::ApiError,
+    persistence::{self, write_cold},
+};
 use axum::{Json, extract::State};
 use serde::Deserialize;
 use thiserror::Error;
 use tracing::{info, warn};
-
-use crate::{
-    AppState,
-    api::ApiError,
-    meta::{BlockNumber, MetaStore, Quality, SeriesId, SeriesMeta, StorageType},
-    persistence::{self, write_cold},
-};
+use vodnik_core::meta::{BlockNumber, Quality, SeriesId, SeriesMeta, StorageType};
 
 #[derive(Debug, Error)]
 pub enum IngestError {
@@ -153,10 +152,10 @@ pub(crate) async fn batch_ingest(
     req.check_type(series.storage_type)?;
 
     let mut start_index = 0;
-    let mut current_block = crate::helpers::get_block_id(&series, req.ts[0]) as usize;
+    let mut current_block = vodnik_core::helpers::get_block_id(&series, req.ts[0]) as usize;
 
     for i in 1..req.ts.len() {
-        let next_block = crate::helpers::get_block_id(&series, req.ts[i]) as usize;
+        let next_block = vodnik_core::helpers::get_block_id(&series, req.ts[i]) as usize;
 
         if next_block != current_block {
             write_chunk(

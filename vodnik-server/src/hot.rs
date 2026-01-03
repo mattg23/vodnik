@@ -1,12 +1,11 @@
 use std::{collections::HashMap, ops::Range};
 
+use crate::ingest::ValueVec;
 use dashmap::DashMap;
 use tracing::{debug, info, trace};
-
-use crate::{
-    helpers,
-    ingest::ValueVec,
-    meta::{BlockMeta, BlockNumber, Quality, SeriesId, SeriesMeta, SizedBlock, StorageType},
+use vodnik_core::helpers;
+use vodnik_core::meta::{
+    BlockMeta, BlockNumber, Quality, SeriesId, SeriesMeta, SizedBlock, StorageType,
 };
 
 #[derive(Default, Debug)]

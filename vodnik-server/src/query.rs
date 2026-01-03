@@ -3,12 +3,8 @@ use axum::{
     extract::{Path, State},
 };
 
-use crate::{
-    AppState,
-    api::ApiError,
-    meta::{BlockNumber, SeriesId, SizedBlock},
-    persistence,
-};
+use crate::{AppState, api::ApiError, persistence};
+use vodnik_core::meta::{BlockNumber, SeriesId, SizedBlock};
 
 pub(crate) async fn read_single_block(
     State(state): State<AppState>,

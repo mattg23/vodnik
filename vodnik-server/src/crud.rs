@@ -1,5 +1,10 @@
 use std::num::NonZero;
 
+use crate::{
+    AppState,
+    api::{ApiError, as_internal_err},
+    meta::MetaStoreError,
+};
 use axum::{
     Json,
     extract::{Path, State},
@@ -8,14 +13,11 @@ use axum::{
 use regex::Regex;
 use serde::Deserialize;
 use thiserror::Error;
-
-use crate::{
-    AppState,
-    api::{ApiError, as_internal_err},
+use vodnik_core::{
     helpers::{derive_block_size, duration},
     meta::{
-        self, BlockLength, BlockNumber, Label, MetaStore, MetaStoreError, SampleLength, SeriesId,
-        SeriesMeta, StorageType, TimeResolution,
+        BlockLength, BlockNumber, Label, SampleLength, SeriesId, SeriesMeta, StorageType,
+        TimeResolution,
     },
 };
 
@@ -102,7 +104,7 @@ fn validate_series_name(name: &str) -> Result<(), ApiError> {
     })
 }
 
-fn into_api_error(e: MetaStoreError) -> ApiError {
+pub fn into_api_error(e: MetaStoreError) -> ApiError {
     e.into()
 }
 

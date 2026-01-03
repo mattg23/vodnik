@@ -9,6 +9,10 @@ use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use tracing::info;
+use vodnik_core::meta::{
+    BlockLength, BlockNumber, Label, NonEmptySlice, SampleLength, SeriesMeta, StorageType,
+    TimeResolution,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
 #[sea_orm(rs_type = "String", db_type = "Text")]
@@ -184,8 +188,8 @@ fn orm_err(e: sea_orm::DbErr) -> MetaStoreError {
     MetaStoreError::Unknown(e.into())
 }
 
-impl MetaStore for SqlMetaStore {
-    async fn create(&self, series: &SeriesMeta) -> Result<SeriesId, MetaStoreError> {
+impl SqlMetaStore {
+    pub(crate) async fn create(&self, series: &SeriesMeta) -> Result<SeriesId, MetaStoreError> {
         let active = ActiveModel {
             name: Set(series.name.clone()),
             storage_type: Set(series.storage_type.into()),
@@ -207,7 +211,7 @@ impl MetaStore for SqlMetaStore {
         Ok(SeriesId(NonZero::new(res.last_insert_id as u64).unwrap()))
     }
 
-    async fn get(&self, id: SeriesId) -> Result<SeriesMeta, MetaStoreError> {
+    pub(crate) async fn get(&self, id: SeriesId) -> Result<SeriesMeta, MetaStoreError> {
         let model = Entity::find_by_id(id.0.get() as i64)
             .one(&self.db)
             .await
@@ -216,13 +220,13 @@ impl MetaStore for SqlMetaStore {
 
         Ok(model_to_meta(model))
     }
-    async fn get_all(&self) -> Result<Vec<SeriesMeta>, MetaStoreError> {
+    pub(crate) async fn get_all(&self) -> Result<Vec<SeriesMeta>, MetaStoreError> {
         let models = Entity::find().all(&self.db).await.map_err(orm_err)?;
 
         Ok(models.into_iter().map(model_to_meta).collect())
     }
 
-    async fn update(&self, series: &SeriesMeta) -> Result<(), MetaStoreError> {
+    pub(crate) async fn update(&self, series: &SeriesMeta) -> Result<(), MetaStoreError> {
         let mut model = Entity::find_by_id(series.id.0.get() as i64)
             .one(&self.db)
             .await
@@ -244,7 +248,7 @@ impl MetaStore for SqlMetaStore {
 
         Ok(())
     }
-    async fn delete(&self, id: SeriesId) -> Result<(), MetaStoreError> {
+    pub(crate) async fn delete(&self, id: SeriesId) -> Result<(), MetaStoreError> {
         let res = Entity::delete_by_id(id.0.get() as i64)
             .exec(&self.db)
             .await
@@ -256,7 +260,7 @@ impl MetaStore for SqlMetaStore {
 
         Ok(())
     }
-    async fn match_any(
+    pub(crate) async fn match_any(
         &self,
         labels: NonEmptySlice<'_, Label>,
     ) -> Result<Vec<SeriesMeta>, MetaStoreError> {
@@ -271,7 +275,7 @@ impl MetaStore for SqlMetaStore {
             .collect())
     }
 
-    async fn match_all(
+    pub(crate) async fn match_all(
         &self,
         labels: NonEmptySlice<'_, Label>,
     ) -> Result<Vec<SeriesMeta>, MetaStoreError> {
