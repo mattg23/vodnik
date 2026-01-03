@@ -15,7 +15,7 @@ pub fn get_block_id(meta: &SeriesMeta, unix_ms: u64) -> u64 {
 }
 
 pub fn get_sample_offset(meta: &SeriesMeta, delta_from_block_start: u64) -> u64 {
-    let res: u64 = meta.block_resolution.into();
+    let res: u64 = meta.sample_resolution.into();
     delta_from_block_start / (meta.sample_length.0.get() * res)
 }
 
@@ -36,11 +36,10 @@ pub fn derive_block_size(
     sample_len: SampleLength,
 ) -> (BlockLength, TimeResolution) {
     const MIN_BLOCK_LENGTH: u64 = 1024; // TODO: settings? we need to test this
-    let sample_bytes = storage_type.sample_bytes();
 
     let ms_per_sample: u64 = sample_len.0.get() * (sample_res as u64);
 
-    let (block_len, block_res) = match (ms_per_sample * MIN_BLOCK_LENGTH) {
+    let (block_len, block_res) = match ms_per_sample * MIN_BLOCK_LENGTH {
         ms if ms < TimeResolution::Second.into() => (ms, TimeResolution::Millisecond),
         ms if ms < TimeResolution::Minute.into() => {
             (ms / TimeResolution::Second as u64, TimeResolution::Second)

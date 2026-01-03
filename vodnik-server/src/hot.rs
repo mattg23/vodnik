@@ -1,8 +1,8 @@
 use std::{collections::HashMap, ops::Range};
 
-use crate::ingest::ValueVec;
 use dashmap::DashMap;
 use tracing::{debug, info, trace};
+use vodnik_core::api::ValueVec;
 use vodnik_core::helpers;
 use vodnik_core::meta::{
     BlockMeta, BlockNumber, Quality, SeriesId, SeriesMeta, SizedBlock, StorageType,

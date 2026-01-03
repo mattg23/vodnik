@@ -1,6 +1,6 @@
 use std::{env, sync::Arc};
 
-use axum::{Router, routing::get};
+use axum::{Router, extract::DefaultBodyLimit, routing::get};
 use opendal::Operator;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing_subscriber::{EnvFilter, prelude::*};
@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .merge(api::routes())
+        .layer(DefaultBodyLimit::max(500 * 1024 * 1024))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().include_headers(false)),

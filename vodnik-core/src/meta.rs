@@ -1,7 +1,6 @@
 use num_traits::{Bounded, Num, NumAssign, NumCast};
 use serde::{Deserialize, Serialize};
 use std::{fmt, num::NonZero};
-use thiserror::Error;
 
 use crate::helpers;
 
