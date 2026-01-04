@@ -9,7 +9,7 @@ use axum::{Json, extract::State};
 use tracing::{info, warn};
 use vodnik_core::{
     api::{BatchIngest, IngestError, ValueVec},
-    meta::{BlockNumber, SeriesId, SeriesMeta},
+    meta::{BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, WriteBatch},
 };
 
 impl From<IngestError> for ApiError {
@@ -35,63 +35,72 @@ pub(crate) async fn batch_ingest(
         .map_err(crate::meta::into_api_error)?;
 
     req.check_type(series.storage_type)?;
+    match req.vals {
+        ValueVec::F32(items) => batch_writes(&state, &series, req.ts, items, req.qs).await,
+        ValueVec::F64(items) => batch_writes(&state, &series, req.ts, items, req.qs).await,
+        ValueVec::I32(items) => batch_writes(&state, &series, req.ts, items, req.qs).await,
+        ValueVec::I64(items) => batch_writes(&state, &series, req.ts, items, req.qs).await,
+        ValueVec::U32(items) => batch_writes(&state, &series, req.ts, items, req.qs).await,
+        ValueVec::U64(items) => batch_writes(&state, &series, req.ts, items, req.qs).await,
+        ValueVec::Enum(items) => batch_writes(&state, &series, req.ts, items, req.qs).await,
+    }
+}
 
+async fn batch_writes<T: BlockWritable>(
+    state: &AppState,
+    series: &SeriesMeta,
+    ts: Vec<u64>,
+    vals: Vec<T>,
+    qs: Vec<Quality>,
+) -> Result<(), ApiError> {
     let mut start_index = 0;
-    let mut current_block = vodnik_core::helpers::get_block_id(&series, req.ts[0]) as usize;
+    let mut current_block = vodnik_core::helpers::get_block_id(&series, ts[0]) as usize;
 
-    for i in 1..req.ts.len() {
-        let next_block = vodnik_core::helpers::get_block_id(&series, req.ts[i]) as usize;
+    for i in 1..ts.len() {
+        let next_block = vodnik_core::helpers::get_block_id(&series, ts[i]) as usize;
 
         if next_block != current_block {
-            write_chunk(
-                &state,
-                &series,
+            let batch = WriteBatch::new(
+                series,
                 BlockNumber(current_block as u64),
-                &req,
-                start_index..i,
-            )
-            .await?;
+                &ts[start_index..i],
+                &vals[start_index..i],
+                &qs[start_index..i],
+            );
+
+            write_chunk(&state, &batch).await?;
 
             start_index = i;
             current_block = next_block;
         }
     }
 
-    write_chunk(
-        &state,
-        &series,
+    let batch = WriteBatch::new(
+        series,
         BlockNumber(current_block as u64),
-        &req,
-        start_index..req.ts.len(),
-    )
-    .await
+        &ts[start_index..ts.len()],
+        &vals[start_index..ts.len()],
+        &qs[start_index..ts.len()],
+    );
+
+    write_chunk(&state, &batch).await
 }
 
-async fn write_chunk(
+async fn write_chunk<'a, T: BlockWritable>(
     state: &AppState,
-    series: &SeriesMeta,
-    block_id: BlockNumber,
-    req: &BatchIngest,
-    range: Range<usize>,
+    batch: &'a WriteBatch<'a, T>,
 ) -> Result<(), ApiError> {
     const MAX_RETRIES: u32 = 3; // TODO: settings!
     let mut attempt = 0;
 
     loop {
-        let res = state.hot.write(
-            &series,
-            block_id,
-            &req.ts[range.clone()],
-            &req.vals,
-            &req.qs[range.clone()],
-            range.clone(),
-        );
+        let res = state.hot.write(batch);
 
         match res {
             crate::hot::WriteResult::Ok { flushing, .. } => {
                 if !flushing.is_empty() {
                     let s = state.clone();
-                    let sid = series.id;
+                    let sid = batch.series.id;
                     tokio::spawn(async move {
                         flush_background(&s, sid, flushing).await;
                     });
@@ -108,93 +117,7 @@ async fn write_chunk(
                 tokio::task::yield_now().await;
             }
             crate::hot::WriteResult::NeedsColdStore => {
-                let cold_write_result = match &req.vals {
-                    ValueVec::F32(items) => {
-                        write_cold(
-                            &state.storage,
-                            &state.block_meta,
-                            series,
-                            block_id,
-                            &req.ts[range.clone()],
-                            &req.qs[range.clone()],
-                            &items[range.clone()],
-                        )
-                        .await
-                    }
-
-                    ValueVec::F64(items) => {
-                        write_cold(
-                            &state.storage,
-                            &state.block_meta,
-                            series,
-                            block_id,
-                            &req.ts[range.clone()],
-                            &req.qs[range.clone()],
-                            &items[range.clone()],
-                        )
-                        .await
-                    }
-                    ValueVec::I32(items) => {
-                        write_cold(
-                            &state.storage,
-                            &state.block_meta,
-                            series,
-                            block_id,
-                            &req.ts[range.clone()],
-                            &req.qs[range.clone()],
-                            &items[range.clone()],
-                        )
-                        .await
-                    }
-                    ValueVec::I64(items) => {
-                        write_cold(
-                            &state.storage,
-                            &state.block_meta,
-                            series,
-                            block_id,
-                            &req.ts[range.clone()],
-                            &req.qs[range.clone()],
-                            &items[range.clone()],
-                        )
-                        .await
-                    }
-                    ValueVec::U32(items) => {
-                        write_cold(
-                            &state.storage,
-                            &state.block_meta,
-                            series,
-                            block_id,
-                            &req.ts[range.clone()],
-                            &req.qs[range.clone()],
-                            &items[range.clone()],
-                        )
-                        .await
-                    }
-                    ValueVec::U64(items) => {
-                        write_cold(
-                            &state.storage,
-                            &state.block_meta,
-                            series,
-                            block_id,
-                            &req.ts[range.clone()],
-                            &req.qs[range.clone()],
-                            &items[range.clone()],
-                        )
-                        .await
-                    }
-                    ValueVec::Enum(items) => {
-                        write_cold(
-                            &state.storage,
-                            &state.block_meta,
-                            series,
-                            block_id,
-                            &req.ts[range.clone()],
-                            &req.qs[range.clone()],
-                            &items[range.clone()],
-                        )
-                        .await
-                    }
-                };
+                let cold_write_result = write_cold(&state.storage, &state.block_meta, batch).await;
                 return cold_write_result;
             }
         }

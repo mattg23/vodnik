@@ -7,6 +7,7 @@ use ulid::Ulid;
 use vodnik_core::helpers;
 use vodnik_core::meta::{
     ArchivedSizedBlock, BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, SizedBlock,
+    WriteBatch,
 };
 
 pub async fn flush_block(
@@ -95,34 +96,31 @@ pub async fn read_block_from_storage(
     Ok(block)
 }
 
-pub(crate) async fn write_cold<T: BlockWritable>(
+pub(crate) async fn write_cold<'a, T: BlockWritable>(
     op: &Operator,
     db: &BlockMetaStore,
-    series: &SeriesMeta,
-    block: BlockNumber,
-    ts: &[u64],
-    qs: &[Quality],
-    vals: &[T],
+    batch: &'a WriteBatch<'a, T>,
 ) -> Result<(), ApiError> {
     debug!(
         "write_bold:: Series={}, Block={:?}, #samples={}",
-        series.id,
-        &block,
-        ts.len()
+        batch.series.id,
+        batch.block_id,
+        batch.ts.len()
     );
 
-    let mut block_to_write = match read_block_from_storage(op, db, series.id, block).await {
-        Ok(b) => b,
-        Err(ApiError::NotFound(_)) => {
-            let len = helpers::get_block_length(&series) as usize;
-            T::new_sized_block(len)
-        }
-        Err(e) => {
-            error!("{e:?}");
-            return Err(e);
-        }
-    };
+    let mut block_to_write =
+        match read_block_from_storage(op, db, batch.series.id, batch.block_id).await {
+            Ok(b) => b,
+            Err(ApiError::NotFound(_)) => {
+                let len = helpers::get_block_length(batch.series) as usize;
+                T::new_sized_block(len)
+            }
+            Err(e) => {
+                error!("{e:?}");
+                return Err(e);
+            }
+        };
 
-    block_to_write.write(series, block, ts, vals, qs);
-    flush_block(op, db, series.id, block, &block_to_write).await
+    block_to_write.write(batch);
+    flush_block(op, db, batch.series.id, batch.block_id, &block_to_write).await
 }

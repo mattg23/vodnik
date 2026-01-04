@@ -5,7 +5,8 @@ use tracing::{debug, info, trace};
 use vodnik_core::api::ValueVec;
 use vodnik_core::helpers;
 use vodnik_core::meta::{
-    BlockMeta, BlockNumber, Quality, SeriesId, SeriesMeta, SizedBlock, StorageType,
+    BlockMeta, BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, SizedBlock, StorageType,
+    WriteBatch,
 };
 
 #[derive(Default, Debug)]
@@ -14,7 +15,6 @@ struct HotData {
     flushing: HashMap<BlockNumber, SizedBlock>,
     live_id: Option<BlockNumber>,
 }
-
 #[derive(Debug)]
 pub(crate) enum WriteResult {
     Ok {
@@ -25,67 +25,6 @@ pub(crate) enum WriteResult {
     NeedsColdStore,
 }
 
-macro_rules! write_hot_variant {
-    (
-        $self:expr,       // The 'self' instance
-        $series:expr,     // SeriesMeta
-        $block:expr,      // BlockNumber
-        $ts:expr,         // Timestamp slice
-        $qs:expr,         // Quality slice
-        $items:expr,      // Values slice (e.g., &[f32])
-        $Variant:path,    // The Enum Variant (e.g., SizedBlock::F32Block)
-        $Type:ty,         // The Native Type (e.g., f32)
-        $def:expr         // Default Value of the Native type
-    ) => {{
-        // 1. Lifecycle Management: Rotate, Backfill, or Existing
-        let mut current = if $self.live.is_some() {
-            let live_block = $self
-                .live_id
-                .expect("self.live == Some(..), but live_id is None?");
-
-            if live_block < $block {
-                // Case: Rotation (Newer block arrived)
-                let len = helpers::get_block_length(&$series) as usize;
-                $self.flush_live();
-                $self.live_id = Some($block);
-                info!("rotated live block for series {}", $series.id);
-                $Variant(
-                    BlockMeta::new(),
-                    vec![$def; len],
-                    vec![Quality::MISSING; len],
-                )
-            } else if live_block > $block {
-                // Case: Backfill (Older block arrived) -> Send to Cold Store
-                return WriteResult::NeedsColdStore;
-            } else {
-                // Case: Current (Append to existing live block)
-                $self.live.take().unwrap()
-            }
-        } else {
-            // Case: Cold Start (First block)
-            $self.live_id = Some($block);
-            let len = helpers::get_block_length(&$series) as usize;
-            $Variant(
-                BlockMeta::new(),
-                vec![$def; len],
-                vec![Quality::MISSING; len],
-            )
-        };
-
-        // write to the block
-        current.write::<$Type>($series, $block, $ts, $items, $qs);
-
-        // State Restore
-        $self.live = Some(current);
-        $self.live_id = Some($block);
-
-        WriteResult::Ok {
-            live: $self.live_id.expect("No live_id after write"),
-            flushing: $self.flushing.keys().copied().collect(),
-        }
-    }};
-}
-
 impl HotData {
     fn flushed(&mut self, block: BlockNumber) {
         if let Some(_) = self.flushing.remove(&block) {
@@ -94,119 +33,50 @@ impl HotData {
             info!("tried to remove {block:?} from flushing list, which didn't exist");
         }
     }
-    fn write_into_block(
-        &mut self,
-        series: &SeriesMeta,
-        block: BlockNumber,
-        ts: &[u64],
-        qs: &[Quality],
-        vals: &ValueVec,
-        val_range: Range<usize>,
-    ) -> WriteResult {
+    fn write_into_block<T: BlockWritable>(&mut self, batch: &WriteBatch<T>) -> WriteResult {
         debug!(
             "write_into_block:: Series={}, Block={:?}, #samples={}",
-            series.id,
-            &block,
-            ts.len()
+            batch.series.id,
+            batch.block_id,
+            batch.ts.len()
         );
-        match (series.storage_type, vals) {
-            (StorageType::Float32, ValueVec::F32(items)) => {
-                write_hot_variant!(
-                    self,
-                    series,
-                    block,
-                    ts,
-                    qs,
-                    &items[val_range.clone()],
-                    SizedBlock::F32Block,
-                    f32,
-                    f32::default()
-                )
+
+        let mut current = if self.live.is_some() {
+            let live_block = self
+                .live_id
+                .expect("self.live == Some(..), but live_id is None?");
+
+            if live_block < batch.block_id {
+                // Case: Rotation (Newer block arrived)
+                let len = helpers::get_block_length(batch.series) as usize;
+                self.flush_live();
+                self.live_id = Some(batch.block_id);
+                info!("rotated live block for series {}", batch.series.id);
+                SizedBlock::new::<T>(len)
+            } else if live_block > batch.block_id {
+                // Case: Backfill (Older block arrived) -> Send to Cold Store
+                return WriteResult::NeedsColdStore;
+            } else {
+                // Case: Current (Append to existing live block)
+                self.live.take().unwrap()
             }
-            (StorageType::Float64, ValueVec::F64(items)) => {
-                write_hot_variant!(
-                    self,
-                    series,
-                    block,
-                    ts,
-                    qs,
-                    &items[val_range.clone()],
-                    SizedBlock::F64Block,
-                    f64,
-                    f64::default()
-                )
-            }
-            (StorageType::Int32, ValueVec::I32(items)) => {
-                write_hot_variant!(
-                    self,
-                    series,
-                    block,
-                    ts,
-                    qs,
-                    &items[val_range.clone()],
-                    SizedBlock::I32Block,
-                    i32,
-                    i32::default()
-                )
-            }
-            (StorageType::Int64, ValueVec::I64(items)) => {
-                write_hot_variant!(
-                    self,
-                    series,
-                    block,
-                    ts,
-                    qs,
-                    &items[val_range.clone()],
-                    SizedBlock::I64Block,
-                    i64,
-                    i64::default()
-                )
-            }
-            (StorageType::UInt32, ValueVec::U32(items)) => {
-                write_hot_variant!(
-                    self,
-                    series,
-                    block,
-                    ts,
-                    qs,
-                    &items[val_range.clone()],
-                    SizedBlock::U32Block,
-                    u32,
-                    u32::default()
-                )
-            }
-            (StorageType::UInt64, ValueVec::U64(items)) => {
-                write_hot_variant!(
-                    self,
-                    series,
-                    block,
-                    ts,
-                    qs,
-                    &items[val_range.clone()],
-                    SizedBlock::U64Block,
-                    u64,
-                    u64::default()
-                )
-            }
-            (StorageType::Enumeration, ValueVec::Enum(items)) => {
-                write_hot_variant!(
-                    self,
-                    series,
-                    block,
-                    ts,
-                    qs,
-                    &items[val_range.clone()],
-                    SizedBlock::U8Block,
-                    u8,
-                    u8::default()
-                )
-            }
-            (st, val) => {
-                panic!(
-                    "Type Mismatch in Ingestion: Series expected {:?}, but payload contained {:?}",
-                    st, val
-                )
-            }
+        } else {
+            // Case: Cold Start (First block)
+            self.live_id = Some(batch.block_id);
+            let len = helpers::get_block_length(&batch.series) as usize;
+            SizedBlock::new::<T>(len)
+        };
+
+        // write to the block
+        current.write::<T>(batch);
+
+        // State Restore
+        self.live = Some(current);
+        self.live_id = Some(batch.block_id);
+
+        WriteResult::Ok {
+            live: self.live_id.expect("No live_id after write"),
+            flushing: self.flushing.keys().copied().collect(),
         }
     }
 
@@ -263,28 +133,18 @@ impl HotSet {
         }
     }
 
-    pub(crate) fn write(
-        &self,
-        series: &SeriesMeta,
-        block: BlockNumber,
-        ts: &[u64],
-        vals: &ValueVec,
-        qs: &[Quality],
-        val_range: Range<usize>,
-    ) -> WriteResult {
-        match self.data.try_get_mut(&series.id) {
+    pub(crate) fn write<T: BlockWritable>(&self, batch: &WriteBatch<T>) -> WriteResult {
+        match self.data.try_get_mut(&batch.series.id) {
             dashmap::try_result::TryResult::Present(mut hd) => {
-                let wr = hd
-                    .value_mut()
-                    .write_into_block(series, block, ts, qs, vals, val_range);
+                let wr = hd.value_mut().write_into_block(batch);
                 trace!("case Present: {:?}", hd.value());
                 wr
             }
             dashmap::try_result::TryResult::Absent => {
                 let mut hd = HotData::default();
-                let wr = hd.write_into_block(series, block, ts, qs, vals, val_range);
+                let wr = hd.write_into_block(batch);
                 trace!("case Absent: {hd:?}");
-                self.data.insert(series.id, hd);
+                self.data.insert(batch.series.id, hd);
                 wr
             }
             dashmap::try_result::TryResult::Locked => WriteResult::Busy,

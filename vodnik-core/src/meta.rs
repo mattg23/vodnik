@@ -401,41 +401,61 @@ pub enum SizedBlock {
     U8Block(BlockMeta<u8>, Vec<u8>, Vec<Quality>),
 }
 
-pub trait BlockWritable: StorableNum {
-    fn write_to_block(
-        block: &mut SizedBlock,
-        series: &SeriesMeta,
-        block_num: BlockNumber,
-        ts: &[u64],
-        new_vals: &[Self],
-        new_qs: &[Quality],
-    );
+pub struct WriteBatch<'a, T: StorableNum> {
+    pub series: &'a SeriesMeta,
+    pub block_id: BlockNumber,
+    pub ts: &'a [u64], // ms after UNIX epoch
+    pub vals: &'a [T],
+    pub qs: &'a [Quality],
+}
 
+impl<'a, T: StorableNum> WriteBatch<'a, T> {
+    pub fn new(
+        series: &'a SeriesMeta,
+        block_id: BlockNumber,
+        ts: &'a [u64],
+        vals: &'a [T],
+        qs: &'a [Quality],
+    ) -> Self {
+        assert!(
+            ts.len() == vals.len() && vals.len() == qs.len(),
+            "WriteBatch length mismatch: ts={}, vals={}, qs={}.",
+            ts.len(),
+            vals.len(),
+            qs.len()
+        );
+
+        Self {
+            series,
+            block_id,
+            ts,
+            vals,
+            qs,
+        }
+    }
+}
+
+pub trait BlockWritable: StorableNum {
+    fn write_to_block(block: &mut SizedBlock, batch: &WriteBatch<Self>);
     fn new_sized_block(len: usize) -> SizedBlock;
 }
 
 macro_rules! impl_block_data_type {
     ($type:ty, $variant:ident) => {
         impl BlockWritable for $type {
-            fn write_to_block(
-                block: &mut SizedBlock,
-                series: &SeriesMeta,
-                block_num: BlockNumber,
-                ts: &[u64],
-                new_vals: &[Self],
-                new_qs: &[Quality],
-            ) {
-                assert!(ts.len() == new_vals.len() && new_vals.len() == new_qs.len());
-
+            fn write_to_block(block: &mut SizedBlock, batch: &WriteBatch<Self>) {
                 match block {
                     SizedBlock::$variant(block_meta, vals, qs) => {
-                        let bl_start = helpers::get_block_start_as_offset(series, block_num.0);
+                        let bl_start =
+                            helpers::get_block_start_as_offset(batch.series, batch.block_id.0);
 
-                        for i in 0..ts.len() {
-                            let idx = helpers::get_sample_offset(series, ts[i] - bl_start) as usize;
+                        for i in 0..batch.ts.len() {
+                            let idx =
+                                helpers::get_sample_offset(batch.series, batch.ts[i] - bl_start)
+                                    as usize;
 
-                            vals[idx] = new_vals[i];
-                            qs[idx] = new_qs[i];
+                            vals[idx] = batch.vals[i];
+                            qs[idx] = batch.qs[i];
                         }
                         // TODO: do running stats instead of full recalc
                         block_meta.recalc_block_data_full(vals, qs);
@@ -470,15 +490,8 @@ impl_block_data_type!(u64, U64Block);
 impl_block_data_type!(u8, U8Block);
 
 impl SizedBlock {
-    pub fn write<T: BlockWritable>(
-        &mut self,
-        series: &SeriesMeta,
-        block: BlockNumber,
-        ts: &[u64],
-        new_vals: &[T],
-        new_qs: &[Quality],
-    ) {
-        T::write_to_block(self, series, block, ts, new_vals, new_qs);
+    pub fn write<T: BlockWritable>(&mut self, batch: &WriteBatch<T>) {
+        T::write_to_block(self, batch);
     }
 
     pub fn new<T: BlockWritable>(len: usize) -> SizedBlock {
