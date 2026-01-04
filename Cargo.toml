@@ -14,7 +14,6 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 num-traits = "0.2.19"
-rkyv = "0.8.12"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.17"
 tracing = "0.1.44"

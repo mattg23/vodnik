@@ -1,8 +1,8 @@
+use crate::helpers;
 use num_traits::{Bounded, Num, NumAssign, NumCast};
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 use std::{fmt, num::NonZero};
-
-use crate::helpers;
 
 pub trait SafeAdd: Copy {
     fn safe_add(self, other: Self) -> Self;
@@ -58,14 +58,14 @@ impl_binary_accumulator!(f64, 8, i64, 8, u64, 8, i128, 16, u128, 16);
 
 // for f64/f32 NaN is not allowed. this should be checked at the boundary
 // at ingestion time. StorableNum assumes a non-NaN value for floating point types
-pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy {
+pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy + Debug {
     type Accumulator: Num
         + NumCast
         + PartialOrd
         + Copy
         + NumAssign
         + SafeAdd
-        + std::fmt::Debug
+        + Debug
         + Default
         + BinaryAccumulator;
 
@@ -556,7 +556,7 @@ pub struct SeriesId(pub NonZero<u64>);
 
 impl std::fmt::Display for SeriesId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        std::fmt::Display::fmt(&self.0, f)
     }
 }
 

@@ -3640,7 +3640,6 @@ dependencies = [
  "num-traits",
  "opendal",
  "regex",
- "rkyv 0.8.12",
  "sea-orm",
  "serde",
  "serde_json",

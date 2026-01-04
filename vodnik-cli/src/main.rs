@@ -1,5 +1,6 @@
 use std::{
     num::NonZero,
+    path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -7,7 +8,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::Client;
 use vodnik_core::{
     api::{BatchIngest, ValueVec},
-    meta::{Quality, SeriesId},
+    codec,
+    meta::{BlockMeta, Quality, SeriesId, SizedBlock, StorableNum},
 };
 
 #[derive(Parser)]
@@ -51,6 +53,16 @@ enum Commands {
         #[arg(long, default_value_t = 192)]
         quality: u8,
     },
+
+    /// inspect a local block file
+    Inspect {
+        /// Path to the .blk file
+        path: PathBuf,
+
+        /// Print the first N values (optional)
+        #[arg(long, default_value_t = 10)]
+        head: usize,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -85,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
             quality,
             stype,
         } => generate_data(&cli, series_id, count, pattern, start, quality, stype).await?,
+        Commands::Inspect { path, head } => inspect_block(path, head)?,
     }
     Ok(())
 }
@@ -194,5 +207,141 @@ fn generate_values(stype: StorageType, len: usize, pattern: Pattern) -> ValueVec
                 .collect();
             ValueVec::Enum(vals)
         }
+    }
+}
+
+fn inspect_block(path: PathBuf, head: usize) -> anyhow::Result<()> {
+    println!("Inspecting file: {:?}", path);
+
+    // TODO: BufReader
+    let bytes = std::fs::read(&path).map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+
+    let file_size = bytes.len();
+    let block = codec::decode_block(&bytes).map_err(|e| anyhow::anyhow!("Decode failed: {}", e))?;
+
+    macro_rules! inspect {
+        ($meta:expr, $vals:expr, $qs:expr, $type_name:literal) => {{
+            print_block_stats($meta, $qs, file_size, $type_name);
+            if head > 0 {
+                print_head($vals, $qs, head);
+            }
+        }};
+    }
+
+    match &block {
+        SizedBlock::F32Block(m, v, q) => inspect!(m, v, q, "F32"),
+        SizedBlock::F64Block(m, v, q) => inspect!(m, v, q, "F64"),
+        SizedBlock::I32Block(m, v, q) => inspect!(m, v, q, "I32"),
+        SizedBlock::I64Block(m, v, q) => inspect!(m, v, q, "I64"),
+        SizedBlock::U32Block(m, v, q) => inspect!(m, v, q, "U32"),
+        SizedBlock::U64Block(m, v, q) => inspect!(m, v, q, "U64"),
+        SizedBlock::U8Block(m, v, q) => inspect!(m, v, q, "U8"),
+    }
+    Ok(())
+}
+
+fn print_block_stats<T: StorableNum>(
+    meta: &BlockMeta<T>,
+    qs: &[Quality],
+    file_size: usize,
+    type_name: &str,
+) {
+    let total_samples = qs.len();
+
+    println!("==================================================");
+    println!("Previous Object Key:   {}", meta.object_key);
+    println!("--------------------------------------------------");
+
+    println!("Type:         {}", type_name);
+    println!("File Size:    {} bytes", file_size);
+    println!("Samples:      {} Total", total_samples);
+    println!("   ├─ Non-Miss:  {}", meta.count_non_missing);
+    println!("   └─ Valid:     {} (Good | Uncertain)", meta.count_valid);
+
+    println!("--------------------------------------------------");
+    println!("Valid Data Stats:");
+    println!("   ├─ Min:       {:?}", meta.min);
+    println!("   ├─ Max:       {:?}", meta.max);
+    println!("   └─ Sum:       {:?}", meta.sum);
+
+    println!("--------------------------------------------------");
+    println!("Boundary Values:");
+
+    let fmt_pt = |val: T, q: Quality, off: u32| -> String {
+        format!(
+            "{:?} (Q:{:?} | {}) @ +{}sample_t",
+            val,
+            q,
+            quality_bits(q.0),
+            off
+        )
+    };
+
+    println!("   [Any Data]");
+    println!(
+        "   ├─ First:     {}",
+        fmt_pt(meta.fst, meta.fst_q, meta.fst_offset)
+    );
+    println!(
+        "   └─ Last:      {}",
+        fmt_pt(meta.lst, meta.lst_q, meta.lst_offset)
+    );
+
+    println!("   [Valid Only]");
+    println!(
+        "   ├─ First:     {}",
+        fmt_pt(meta.fst_valid, meta.fst_valid_q, meta.fst_valid_offset)
+    );
+    println!(
+        "   └─ Last:      {}",
+        fmt_pt(meta.lst_valid, meta.lst_valid_q, meta.lst_valid_offset)
+    );
+
+    println!("--------------------------------------------------");
+    println!("Quality Internals:");
+    println!(
+        "   ├─ OR Mask:   0x{:08x} (bin: {})",
+        meta.qual_acc_or,
+        bin_grouped(meta.qual_acc_or, 4)
+    );
+    println!(
+        "   └─ AND Mask:  0x{:08x} (bin: {})",
+        meta.qual_acc_and,
+        bin_grouped(meta.qual_acc_and, 4)
+    );
+
+    println!("==================================================");
+}
+
+fn quality_bits(q: u8) -> String {
+    let qq = (q >> 6) & 0b11;
+    let ssss = (q >> 2) & 0b1111;
+    let ll = q & 0b11;
+
+    format!("{:02b}_{:04b}_{:02b}", qq, ssss, ll)
+}
+
+fn bin_grouped(v: u32, group: usize) -> String {
+    let s = format!("{:032b}", v);
+    s.as_bytes()
+        .chunks(group)
+        .map(std::str::from_utf8)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join("_")
+}
+
+// Generic Worker: Prints Head
+fn print_head<T: StorableNum>(vals: &[T], qs: &[Quality], n: usize) {
+    let limit = n.min(vals.len());
+    println!("First {} values:", limit);
+    for i in 0..limit {
+        println!(
+            "   [{:04}] {:?} (Q: {:?} | {})",
+            i,
+            vals[i],
+            qs[i],
+            quality_bits(qs[i].0)
+        );
     }
 }

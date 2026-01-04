@@ -1,14 +1,10 @@
 use crate::api::ApiError;
 use crate::meta::block::BlockMetaStore;
 use opendal::Operator;
-use rkyv::{deserialize, rancor};
 use tracing::{debug, error};
 use ulid::Ulid;
 use vodnik_core::helpers;
-use vodnik_core::meta::{
-    ArchivedSizedBlock, BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, SizedBlock,
-    WriteBatch,
-};
+use vodnik_core::meta::{BlockNumber, BlockWritable, SeriesId, SizedBlock, WriteBatch};
 
 pub async fn flush_block(
     op: &Operator,
@@ -17,11 +13,6 @@ pub async fn flush_block(
     block_id: BlockNumber,
     block: &SizedBlock,
 ) -> Result<(), ApiError> {
-    let bytes = rkyv::to_bytes::<rancor::Error>(block).map_err(|e| {
-        error!("Rkyv serialization error: {:?}", e);
-        ApiError::Internal
-    })?;
-
     // Format: data/{series_id % 100}/{series_id}/{block_id}_{uuid}.blk
     let path_pref = series_id.0.get() % 100u64;
     let write_id = Ulid::new();
@@ -31,9 +22,7 @@ pub async fn flush_block(
     );
 
     // Write to Storage (OpenDAL)
-    // TODO: this creates a copy, fine for now. we prob write our own serializer later
-    //       but atm we are experimenting with the internal structure
-    let bytes = bytes.to_vec();
+    let bytes = vodnik_core::codec::encode_block(&block).map_err(|_| ApiError::Internal)?;
 
     // TODO: On S3 we need to know when the flushed block is available for read (research).
     //       maybe we need to postpone updating the metadata a bit
@@ -76,12 +65,7 @@ pub async fn read_block_from_storage(
         })
         .map(|bs| bs.to_vec())?;
 
-    let archived = rkyv::access::<ArchivedSizedBlock, rancor::Error>(&bytes).unwrap();
-
-    let mut block = deserialize::<SizedBlock, rancor::Error>(archived).map_err(|e| {
-        error!("Rkyv serialization error: {:?}", e);
-        ApiError::Internal
-    })?;
+    let mut block = vodnik_core::codec::decode_block(&bytes).map_err(|_| ApiError::Internal)?;
 
     match &mut block {
         SizedBlock::F32Block(meta, ..) => meta.object_key = key,
