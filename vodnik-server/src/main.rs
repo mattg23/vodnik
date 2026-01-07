@@ -1,8 +1,15 @@
-use std::{env, sync::Arc};
+use std::{
+    env,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use axum::{Router, extract::DefaultBodyLimit, routing::get};
 use opendal::Operator;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, prelude::*};
 
 use crate::{
@@ -10,7 +17,7 @@ use crate::{
     meta::{block::BlockMetaStore, store::SqlMetaStore},
 };
 
-use vodnik_core::VODNIK_ASCII;
+use vodnik_core::{VODNIK_ASCII, VODNIK_ASCII_REV};
 
 mod api;
 mod crud;
@@ -34,7 +41,12 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(EnvFilter::from_env("VODNIK_LOG"))
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .with_env_var("VODNIK_LOG")
+                .from_env_lossy(),
+        )
         .init();
 
     let db_url =
@@ -79,6 +91,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+static CNT: AtomicUsize = AtomicUsize::new(0);
+
 async fn health() -> &'static str {
-    VODNIK_ASCII
+    if CNT.fetch_add(1, Ordering::Relaxed) % 2 == 0 {
+        VODNIK_ASCII
+    } else {
+        VODNIK_ASCII_REV
+    }
 }
