@@ -23,6 +23,35 @@ macro_rules! impl_safe_add_int {
 
 impl_safe_add_int!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
 
+pub trait ByteStorable {
+    fn write_le_bytes(&self, dst: &mut [u8]);
+    fn read_le_bytes(src: &[u8]) -> Self;
+}
+
+macro_rules! impl_storable_bytes {
+    ($($t:ty),*) => {
+        $(
+            impl ByteStorable for $t {
+                #[inline]
+                fn write_le_bytes(&self, dst: &mut [u8]) {
+                    let bytes = self.to_le_bytes();
+                    dst[..bytes.len()].copy_from_slice(&bytes);
+                }
+
+                #[inline]
+                fn read_le_bytes(src: &[u8]) -> Self {
+                    // TODO: zero copy?
+                    let mut bytes = [0u8; std::mem::size_of::<$t>()];
+                    bytes.copy_from_slice(&src[..std::mem::size_of::<$t>()]);
+                    <$t>::from_le_bytes(bytes)
+                }
+            }
+        )*
+    };
+}
+
+impl_storable_bytes!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
+
 // Helper to handle the BLOB storage for Sums (i128, u128, f64)
 pub trait BinaryAccumulator: Sized {
     fn to_blob(&self) -> Vec<u8>;
@@ -58,7 +87,9 @@ impl_binary_accumulator!(f64, 8, i64, 8, u64, 8, i128, 16, u128, 16);
 
 // for f64/f32 NaN is not allowed. this should be checked at the boundary
 // at ingestion time. StorableNum assumes a non-NaN value for floating point types
-pub trait StorableNum: Num + NumCast + NumAssign + Bounded + PartialOrd + Copy + Debug {
+pub trait StorableNum:
+    Num + NumCast + NumAssign + Bounded + PartialOrd + Copy + Debug + ByteStorable
+{
     type Accumulator: Num
         + NumCast
         + PartialOrd
@@ -539,10 +570,15 @@ impl StorageType {
     }
 }
 
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct BlockNumber(pub u64);
+
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct BlockLength(pub NonZero<u64>);
+
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct SampleLength(pub NonZero<u64>);
 
@@ -551,6 +587,8 @@ pub struct Label {
     pub name: String,
     pub value: String,
 }
+
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct SeriesId(pub NonZero<u64>);
 
@@ -575,6 +613,7 @@ pub struct SeriesMeta {
 }
 
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct NonEmptySlice<'a, T>(&'a [T]);
 
 impl<'a, T> NonEmptySlice<'a, T> {

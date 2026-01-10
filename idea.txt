@@ -39,3 +39,7 @@ Other ideas for the future:
 - deterministic/capped memory usage
 - different ingestion protocols
 
+
+-------------------
+Notes for later:
+- Kani,Loom,Miri,MIRAI,TSAN/ASAN

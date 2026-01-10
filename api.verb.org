@@ -48,7 +48,7 @@ get /series/14
 Content-Type: application/json
 
 ** update series                                                       :verb:
-patch /series/1
+patch /series/14
 Content-Type: application/json
 
 {

@@ -3622,6 +3622,7 @@ dependencies = [
 name = "vodnik-core"
 version = "0.1.0"
 dependencies = [
+ "crc",
  "num-traits",
  "rkyv 0.8.12",
  "serde",

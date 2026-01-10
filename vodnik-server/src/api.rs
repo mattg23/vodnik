@@ -1,20 +1,21 @@
 use std::fmt::Display;
 
 use axum::{
+    Router,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
-    Router,
 };
 use thiserror::Error;
 use tracing::{error, warn};
+use vodnik_core::wal::WalError;
 
 use crate::{
+    AppState,
     crud::{create_series, delete_series, read_series, update_series},
     ingest::batch_ingest,
-    meta::{block::BlockMetaStoreError, MetaStoreError},
+    meta::{MetaStoreError, block::BlockMetaStoreError},
     query::read_single_block,
-    AppState,
 };
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -105,5 +106,12 @@ impl From<BlockMetaStoreError> for ApiError {
                 ApiError::Internal
             }
         }
+    }
+}
+
+impl From<WalError> for ApiError {
+    fn from(err: WalError) -> Self {
+        error!("WAL Critical Failure: {:?}", err);
+        ApiError::Internal
     }
 }

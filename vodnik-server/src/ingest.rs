@@ -1,15 +1,15 @@
-use std::ops::Range;
-
 use crate::{
     AppState,
     api::ApiError,
     persistence::{self, write_cold},
+    wal::next_txid,
 };
 use axum::{Json, extract::State};
 use tracing::{info, warn};
 use vodnik_core::{
     api::{BatchIngest, IngestError, ValueVec},
-    meta::{BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, WriteBatch},
+    meta::{BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, StorableNum, WriteBatch},
+    wal::{TxId, from_write_batch},
 };
 
 impl From<IngestError> for ApiError {
@@ -68,6 +68,8 @@ async fn batch_writes<T: BlockWritable>(
                 &qs[start_index..i],
             );
 
+            write_to_wal(state, &batch)?;
+
             write_chunk(&state, &batch).await?;
 
             start_index = i;
@@ -84,6 +86,20 @@ async fn batch_writes<T: BlockWritable>(
     );
 
     write_chunk(&state, &batch).await
+}
+
+fn write_to_wal<T: StorableNum>(
+    state: &AppState,
+    batch: &WriteBatch<'_, T>,
+) -> Result<(), ApiError> {
+    let tx = TxId(next_txid());
+    let mut w_entry = from_write_batch(tx, batch);
+    state
+        .wal
+        .lock()
+        .map_err(|e| ApiError::ResourceLocked)?
+        .write_entry(&mut w_entry)?;
+    Ok(())
 }
 
 async fn write_chunk<'a, T: BlockWritable>(

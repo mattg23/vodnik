@@ -1,7 +1,8 @@
 use std::{
     env,
+    path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -15,9 +16,10 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 use crate::{
     hot::HotSet,
     meta::{block::BlockMetaStore, store::SqlMetaStore},
+    wal::{Wal, WalConfig},
 };
 
-use vodnik_core::{VODNIK_ASCII, VODNIK_ASCII_REV};
+use vodnik_core::{VODNIK_ASCII, VODNIK_ASCII_REV, wal::WalSync};
 
 mod api;
 mod crud;
@@ -26,6 +28,7 @@ mod ingest;
 mod meta;
 mod persistence;
 mod query;
+mod wal;
 
 #[derive(Clone, Debug)]
 struct AppState {
@@ -33,6 +36,7 @@ struct AppState {
     pub block_meta: BlockMetaStore,
     pub storage: Operator,
     pub hot: Arc<HotSet>,
+    pub wal: Arc<Mutex<Wal>>,
 }
 
 #[tokio::main]
@@ -65,11 +69,18 @@ async fn main() -> anyhow::Result<()> {
         .layer(opendal::layers::LoggingLayer::default())
         .finish();
 
+    let wal_config = WalConfig {
+        dir: PathBuf::from("/tmp/vodnik_test/wal"),
+        max_file_size: 128 * 1024 * 1024,
+        sync_mode: WalSync::Immediate,
+    };
+
     let state = AppState {
         meta_store: store,
         storage: op,
         block_meta: block_store,
         hot: Arc::new(HotSet::new()),
+        wal: Arc::new(Mutex::new(Wal::new(wal_config)?)),
     };
 
     let app = Router::new()

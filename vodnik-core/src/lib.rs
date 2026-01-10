@@ -2,6 +2,7 @@ pub mod api;
 pub mod codec;
 pub mod helpers;
 pub mod meta;
+pub mod wal;
 
 pub const VODNIK_ASCII: &str = r#"
          ~~~~~~~

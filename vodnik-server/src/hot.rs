@@ -83,7 +83,6 @@ impl HotData {
     fn flush_live(&mut self) {
         let live = self.live.take().unwrap();
         self.flushing.insert(self.live_id.unwrap(), live);
-        // TODO: Notify external system to store block & update meta data
     }
 
     fn take_flushing_block(&mut self, block: BlockNumber) -> Option<SizedBlock> {
