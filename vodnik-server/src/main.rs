@@ -10,7 +10,7 @@ use std::{
 use axum::{Router, extract::DefaultBodyLimit, routing::get};
 use opendal::Operator;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
-use tracing::level_filters::LevelFilter;
+use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::{EnvFilter, prelude::*};
 
 use crate::{
@@ -69,8 +69,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(opendal::layers::LoggingLayer::default())
         .finish();
 
+    let wal_dir = PathBuf::from("/tmp/vodnik_test/wal");
+
     let wal_config = WalConfig {
-        dir: PathBuf::from("/tmp/vodnik_test/wal"),
+        dir: wal_dir.clone(),
         max_file_size: 128 * 1024 * 1024,
         sync_mode: WalSync::Immediate,
     };
@@ -83,6 +85,18 @@ async fn main() -> anyhow::Result<()> {
         wal: Arc::new(Mutex::new(Wal::new(wal_config)?)),
     };
 
+    // recovery
+    info!("starting WAL recovery...");
+    let to_recover = wal::find_wal_to_recover(wal_dir.clone())?;
+    let len = to_recover.len();
+    wal::replay(to_recover, &state).await?;
+    wal::force_flush(&state).await?;
+    info!("recovered {len} WAL entries.");
+    wal::cleanup_wal_files(wal_dir)?;
+    info!("recovery completed.");
+
+    let port = 8123;
+
     let app = Router::new()
         .route("/health", get(health))
         .merge(api::routes())
@@ -92,8 +106,6 @@ async fn main() -> anyhow::Result<()> {
                 .make_span_with(DefaultMakeSpan::new().include_headers(false)),
         )
         .with_state(state);
-
-    let port = 8123;
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await

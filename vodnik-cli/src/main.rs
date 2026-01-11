@@ -10,6 +10,7 @@ use vodnik_core::{
     api::{BatchIngest, ValueVec},
     codec,
     meta::{BlockMeta, Quality, SeriesId, SizedBlock, StorableNum},
+    wal::{TAG_WRITE, WalEntryHeader, WalFrameIterator},
 };
 
 #[derive(Parser)]
@@ -55,7 +56,7 @@ enum Commands {
     },
 
     /// inspect a local block file
-    Inspect {
+    InspectBlock {
         /// Path to the .blk file
         path: PathBuf,
 
@@ -63,6 +64,22 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         head: usize,
     },
+    /// inspect a local WAL file
+    InspectWal {
+        /// Path to the wal file
+        path: PathBuf,
+
+        /// How to print entries
+        #[arg(long, value_enum, default_value_t = WalInspectMode::Headers)]
+        mode: WalInspectMode,
+    },
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum WalInspectMode {
+    Frames,
+    Headers,
+    Full,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -97,8 +114,43 @@ async fn main() -> anyhow::Result<()> {
             quality,
             stype,
         } => generate_data(&cli, series_id, count, pattern, start, quality, stype).await?,
-        Commands::Inspect { path, head } => inspect_block(path, head)?,
+        Commands::InspectBlock { path, head } => inspect_block(path, head)?,
+        Commands::InspectWal { path, mode } => inspect_wal(path, mode)?,
     }
+    Ok(())
+}
+
+fn inspect_wal(path: PathBuf, mode: WalInspectMode) -> anyhow::Result<()> {
+    let iter = WalFrameIterator::new(path)?;
+    for frame_res in iter {
+        let mut frame = frame_res?;
+        print_frame(&mut frame, mode)?;
+    }
+    Ok(())
+}
+
+fn print_frame(frame: &mut vodnik_core::wal::WalFrame, mode: WalInspectMode) -> anyhow::Result<()> {
+    print!("[len:{:8}][crc:{:8x}]", frame.len, frame.crc);
+
+    if mode == WalInspectMode::Headers || mode == WalInspectMode::Full {
+        let header = WalEntryHeader::peek(frame.payload.as_mut_slice())?;
+        let tag = if header.tag == TAG_WRITE {
+            "WRITE"
+        } else {
+            "FLUSH"
+        };
+        print!(
+            "[{},{:?},{:?},{:?}]",
+            tag, header.tx, header.series, header.block
+        );
+    }
+
+    if mode == WalInspectMode::Full {
+        todo!();
+    }
+
+    println!("");
+
     Ok(())
 }
 

@@ -5,11 +5,11 @@ use crate::{
     wal::next_txid,
 };
 use axum::{Json, extract::State};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use vodnik_core::{
     api::{BatchIngest, IngestError, ValueVec},
     meta::{BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, StorableNum, WriteBatch},
-    wal::{TxId, from_write_batch},
+    wal::{TxId, WalEntry, from_write_batch},
 };
 
 impl From<IngestError> for ApiError {
@@ -66,11 +66,10 @@ async fn batch_writes<T: BlockWritable>(
                 &ts[start_index..i],
                 &vals[start_index..i],
                 &qs[start_index..i],
+                TxId(next_txid()),
             );
 
-            write_to_wal(state, &batch)?;
-
-            write_chunk(&state, &batch).await?;
+            write_chunk(&state, &batch, false).await?;
 
             start_index = i;
             current_block = next_block;
@@ -83,17 +82,17 @@ async fn batch_writes<T: BlockWritable>(
         &ts[start_index..ts.len()],
         &vals[start_index..ts.len()],
         &qs[start_index..ts.len()],
+        TxId(next_txid()),
     );
 
-    write_chunk(&state, &batch).await
+    write_chunk(&state, &batch, false).await
 }
 
-fn write_to_wal<T: StorableNum>(
+fn write_batch_to_val<T: StorableNum>(
     state: &AppState,
     batch: &WriteBatch<'_, T>,
 ) -> Result<(), ApiError> {
-    let tx = TxId(next_txid());
-    let mut w_entry = from_write_batch(tx, batch);
+    let mut w_entry = from_write_batch(batch);
     state
         .wal
         .lock()
@@ -102,12 +101,31 @@ fn write_to_wal<T: StorableNum>(
     Ok(())
 }
 
-async fn write_chunk<'a, T: BlockWritable>(
+fn write_flush_to_wal<T: StorableNum>(
+    state: &AppState,
+    tx: TxId,
+    series: SeriesId,
+    block: BlockNumber,
+) -> Result<(), ApiError> {
+    let mut w_entry = WalEntry::<T>::Flush { tx, series, block };
+    state
+        .wal
+        .lock()
+        .map_err(|e| ApiError::ResourceLocked)?
+        .write_entry(&mut w_entry)?;
+    Ok(())
+}
+
+pub(crate) async fn write_chunk<'a, T: BlockWritable>(
     state: &AppState,
     batch: &'a WriteBatch<'a, T>,
+    replay: bool,
 ) -> Result<(), ApiError> {
     const MAX_RETRIES: u32 = 3; // TODO: settings!
     let mut attempt = 0;
+    if !replay {
+        write_batch_to_val(state, &batch)?;
+    }
 
     loop {
         let res = state.hot.write(batch);
@@ -118,6 +136,7 @@ async fn write_chunk<'a, T: BlockWritable>(
                     let s = state.clone();
                     let sid = batch.series.id;
                     tokio::spawn(async move {
+                        // TODO: in case flushing fails, we want to requeue that block
                         flush_background(&s, sid, flushing).await;
                     });
                 }
@@ -129,11 +148,17 @@ async fn write_chunk<'a, T: BlockWritable>(
                 if attempt >= MAX_RETRIES {
                     return Err(ApiError::ResourceLocked);
                 }
-                // Yield the async task to let the lock holder finish
                 tokio::task::yield_now().await;
             }
             crate::hot::WriteResult::NeedsColdStore => {
                 let cold_write_result = write_cold(&state.storage, &state.block_meta, batch).await;
+                if cold_write_result.is_ok() && !replay {
+                    // TODO: in case this fails, we prob want to do more granular err handling later
+                    //       for example in case the disk is full, we might go into a state, where we reject all new data alltogther
+                    //       for the time being, this is just extra work at the time of recovery
+                    _ = write_flush_to_wal::<u8>(state, batch.tx, batch.series.id, batch.block_id)
+                        .inspect_err(|e| error!("{e}"));
+                }
                 return cold_write_result;
             }
         }
@@ -142,7 +167,7 @@ async fn write_chunk<'a, T: BlockWritable>(
 
 async fn flush_background(state: &AppState, series: SeriesId, blocks_to_flush: Vec<BlockNumber>) {
     for block_id in blocks_to_flush.iter() {
-        if let Some(block) = state.hot.take_flushing_block(series, *block_id) {
+        if let Some((tx, block)) = state.hot.take_flushing_block(series, *block_id) {
             let r = persistence::flush_block(
                 &state.storage,
                 &state.block_meta,
@@ -152,6 +177,8 @@ async fn flush_background(state: &AppState, series: SeriesId, blocks_to_flush: V
             )
             .await;
             if r.is_ok() {
+                // TODO: in case flushing fails, we want to requeue that block
+                _ = write_flush_to_wal::<u8>(state, tx, series, *block_id);
                 info!("flushed block {block_id:?} for series {series}");
             }
         }

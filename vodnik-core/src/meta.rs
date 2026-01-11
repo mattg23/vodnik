@@ -1,4 +1,5 @@
 use crate::helpers;
+use crate::wal::TxId;
 use num_traits::{Bounded, Num, NumAssign, NumCast};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -433,6 +434,7 @@ pub enum SizedBlock {
 }
 
 pub struct WriteBatch<'a, T: StorableNum> {
+    pub tx: TxId,
     pub series: &'a SeriesMeta,
     pub block_id: BlockNumber,
     pub ts: &'a [u64], // ms after UNIX epoch
@@ -447,6 +449,7 @@ impl<'a, T: StorableNum> WriteBatch<'a, T> {
         ts: &'a [u64],
         vals: &'a [T],
         qs: &'a [Quality],
+        tx: TxId,
     ) -> Self {
         assert!(
             ts.len() == vals.len() && vals.len() == qs.len(),
@@ -462,6 +465,7 @@ impl<'a, T: StorableNum> WriteBatch<'a, T> {
             ts,
             vals,
             qs,
+            tx,
         }
     }
 }

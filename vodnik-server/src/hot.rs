@@ -8,11 +8,12 @@ use vodnik_core::meta::{
     BlockMeta, BlockNumber, BlockWritable, Quality, SeriesId, SeriesMeta, SizedBlock, StorageType,
     WriteBatch,
 };
+use vodnik_core::wal::TxId;
 
 #[derive(Default, Debug)]
 struct HotData {
-    live: Option<SizedBlock>,
-    flushing: HashMap<BlockNumber, SizedBlock>,
+    live: Option<(TxId, SizedBlock)>,
+    flushing: HashMap<BlockNumber, (TxId, SizedBlock)>,
     live_id: Option<BlockNumber>,
 }
 #[derive(Debug)]
@@ -26,22 +27,16 @@ pub(crate) enum WriteResult {
 }
 
 impl HotData {
-    fn flushed(&mut self, block: BlockNumber) {
-        if let Some(_) = self.flushing.remove(&block) {
-            debug!("removed {block:?} from flushing");
-        } else {
-            info!("tried to remove {block:?} from flushing list, which didn't exist");
-        }
-    }
     fn write_into_block<T: BlockWritable>(&mut self, batch: &WriteBatch<T>) -> WriteResult {
         debug!(
-            "write_into_block:: Series={}, Block={:?}, #samples={}",
+            "write_into_block:: Series={}, Block={:?}, #samples={}, TX={:?}",
             batch.series.id,
             batch.block_id,
-            batch.ts.len()
+            batch.ts.len(),
+            batch.tx
         );
 
-        let mut current = if self.live.is_some() {
+        let (tx, mut current) = if self.live.is_some() {
             let live_block = self
                 .live_id
                 .expect("self.live == Some(..), but live_id is None?");
@@ -52,7 +47,7 @@ impl HotData {
                 self.flush_live();
                 self.live_id = Some(batch.block_id);
                 info!("rotated live block for series {}", batch.series.id);
-                SizedBlock::new::<T>(len)
+                (batch.tx, SizedBlock::new::<T>(len))
             } else if live_block > batch.block_id {
                 // Case: Backfill (Older block arrived) -> Send to Cold Store
                 return WriteResult::NeedsColdStore;
@@ -64,14 +59,15 @@ impl HotData {
             // Case: Cold Start (First block)
             self.live_id = Some(batch.block_id);
             let len = helpers::get_block_length(&batch.series) as usize;
-            SizedBlock::new::<T>(len)
+            (batch.tx, SizedBlock::new::<T>(len))
         };
 
         // write to the block
         current.write::<T>(batch);
-
+        // TODO: handle out of order better
+        let tx = TxId(batch.tx.0.max(tx.0));
         // State Restore
-        self.live = Some(current);
+        self.live = Some((tx, current));
         self.live_id = Some(batch.block_id);
 
         WriteResult::Ok {
@@ -85,7 +81,7 @@ impl HotData {
         self.flushing.insert(self.live_id.unwrap(), live);
     }
 
-    fn take_flushing_block(&mut self, block: BlockNumber) -> Option<SizedBlock> {
+    fn take_flushing_block(&mut self, block: BlockNumber) -> Option<(TxId, SizedBlock)> {
         self.flushing.remove(&block)
     }
 }
@@ -109,6 +105,22 @@ impl HotSet {
         }
     }
 
+    pub(crate) fn take_all_blocks(
+        &self,
+        buff: &mut Vec<(SeriesId, TxId, BlockNumber, SizedBlock)>,
+    ) {
+        for mut k in self.data.iter_mut() {
+            let series = k.key().clone();
+            k.flush_live();
+            let blocks: Vec<BlockNumber> = k.flushing.keys().copied().collect();
+            for b in blocks {
+                if let Some((tx, block)) = k.value_mut().take_flushing_block(b) {
+                    buff.push((series, tx, b, block));
+                }
+            }
+        }
+    }
+
     // returns (live, flushing)
     pub(crate) fn get_live_blocks(&self, id: SeriesId) -> (Option<BlockNumber>, Vec<BlockNumber>) {
         if let Some(hd) = self.data.get(&id) {
@@ -122,7 +134,7 @@ impl HotSet {
         &self,
         series: SeriesId,
         block: BlockNumber,
-    ) -> Option<SizedBlock> {
+    ) -> Option<(TxId, SizedBlock)> {
         match self.data.try_get_mut(&series) {
             dashmap::try_result::TryResult::Present(mut hd) => {
                 hd.value_mut().take_flushing_block(block)

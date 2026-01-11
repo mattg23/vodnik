@@ -1,5 +1,10 @@
 use crate::meta::{BlockNumber, Quality, SeriesId, StorableNum, WriteBatch};
-use std::io;
+use std::{
+    fs::File,
+    io::{self, BufReader, Read},
+    num::NonZero,
+    path::PathBuf,
+};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -32,7 +37,7 @@ pub enum WalError {
 }
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Eq, Ord, PartialOrd)]
 pub struct TxId(pub u64);
 
 #[derive(Debug)]
@@ -56,8 +61,8 @@ pub enum WalEntry<T: StorableNum> {
     },
 }
 
-const TAG_WRITE: u8 = 1;
-const TAG_FLUSH: u8 = 2;
+pub const TAG_WRITE: u8 = 1;
+pub const TAG_FLUSH: u8 = 2;
 
 impl<T: StorableNum> WalEntry<T> {
     pub fn write(&self, bytes: &mut [u8]) -> Result<usize, WalError> {
@@ -107,6 +112,64 @@ impl<T: StorableNum> WalEntry<T> {
         Ok(cursor.pos)
     }
 
+    pub fn read(bytes: &mut [u8]) -> Result<Self, WalError> {
+        if bytes.is_empty() {
+            return Err(WalError::Serialization("Empty payload".into()));
+        }
+
+        let mut cursor = Cursor { buf: bytes, pos: 0 };
+
+        let tag = cursor.read_u8();
+
+        match tag {
+            TAG_WRITE => {
+                let tx = TxId(cursor.read_u64());
+                let series = SeriesId(
+                    NonZero::new(cursor.read_u64())
+                        .ok_or(WalError::Serialization("0 series id".into()))?,
+                );
+                let block = BlockNumber(cursor.read_u64());
+
+                let count = cursor.read_u32() as usize;
+
+                let mut ts = Vec::with_capacity(count);
+                for _ in 0..count {
+                    ts.push(cursor.read_u64());
+                }
+
+                let mut vals = Vec::with_capacity(count);
+                for _ in 0..count {
+                    vals.push(cursor.read_val::<T>());
+                }
+
+                let mut qs = Vec::with_capacity(count);
+                for _ in 0..count {
+                    qs.push(Quality(cursor.read_u8()));
+                }
+
+                Ok(WalEntry::Write {
+                    tx,
+                    series,
+                    block,
+                    ts,
+                    vals,
+                    qs,
+                })
+            }
+            TAG_FLUSH => {
+                let tx = TxId(cursor.read_u64());
+                let series = SeriesId(
+                    NonZero::new(cursor.read_u64())
+                        .ok_or(WalError::Serialization("0 series id".into()))?,
+                );
+                let block = BlockNumber(cursor.read_u64());
+
+                Ok(WalEntry::Flush { tx, series, block })
+            }
+            _ => Err(WalError::Serialization(format!("Unknown tag: {}", tag))),
+        }
+    }
+
     pub fn storage_size_bytes(&self) -> usize {
         match self {
             WalEntry::Write { qs, ts, vals, .. } => {
@@ -127,14 +190,14 @@ impl<T: StorableNum> WalEntry<T> {
     }
 }
 
-pub fn from_write_batch<'a, T: StorableNum>(tx: TxId, batch: &WriteBatch<'a, T>) -> WalEntry<T> {
+pub fn from_write_batch<'a, T: StorableNum>(batch: &WriteBatch<'a, T>) -> WalEntry<T> {
     WalEntry::Write {
         block: batch.block_id,
         series: batch.series.id,
         ts: Vec::from(batch.ts),     // TODO: no cpy
         vals: Vec::from(batch.vals), // TODO: no cpy
         qs: Vec::from(batch.qs),     // TODO: no cpy
-        tx,
+        tx: batch.tx,
     }
 }
 
@@ -201,5 +264,118 @@ impl<'a> Cursor<'a> {
         self.pos += s;
     }
 
-    // TODO: read stuff
+    fn read_u8(&mut self) -> u8 {
+        let v = self.buf[self.pos];
+        self.pos += 1;
+        v
+    }
+
+    fn read_u32(&mut self) -> u32 {
+        let s = size_of::<u32>();
+        // TODO: make this better
+        let bytes = self.buf[self.pos..self.pos + s].try_into().unwrap();
+        self.pos += s;
+        u32::from_le_bytes(bytes)
+    }
+
+    fn read_u64(&mut self) -> u64 {
+        let s = size_of::<u64>();
+        // TODO: make this better
+        let bytes = self.buf[self.pos..self.pos + s].try_into().unwrap();
+        self.pos += s;
+        u64::from_le_bytes(bytes)
+    }
+
+    fn read_val<T: StorableNum>(&mut self) -> T {
+        let s = size_of::<T>();
+        let v = T::read_le_bytes(&self.buf[self.pos..self.pos + s]);
+        self.pos += s;
+        v
+    }
+}
+
+pub struct WalFrameIterator {
+    wal_file: PathBuf,
+    buffer: Vec<u8>,
+    reader: BufReader<File>,
+}
+
+impl WalFrameIterator {
+    pub fn new(wal_file: PathBuf) -> Result<Self, WalError> {
+        Ok(Self {
+            wal_file: wal_file.clone(),
+            buffer: Vec::with_capacity(1 * 1024 * 1024),
+            reader: BufReader::new(std::fs::File::open(wal_file)?),
+        })
+    }
+}
+
+impl Iterator for WalFrameIterator {
+    type Item = Result<WalFrame, WalError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut header = [0u8; 8];
+        match self.reader.read_exact(&mut header) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None,
+            Err(e) => return Some(Err(WalError::Io(e))),
+        }
+
+        let len = u32::from_le_bytes(header[0..4].try_into().unwrap()) as usize;
+        let expected_crc = u32::from_le_bytes(header[4..8].try_into().unwrap());
+
+        if len == 0 || len > (100 * 1024 * 1024) {
+            return Some(Err(WalError::InvalidFrameLength(len as u32)));
+        }
+
+        if self.buffer.len() < len {
+            self.buffer.resize(len, 0);
+        }
+
+        let payload_buf = &mut self.buffer[..len];
+        if let Err(e) = self.reader.read_exact(payload_buf) {
+            return Some(Err(WalError::Io(e)));
+        }
+
+        let crc = ALGO.checksum(payload_buf);
+        if crc != expected_crc {
+            return Some(Err(WalError::ChecksumMismatch {
+                expected: expected_crc,
+                found: crc,
+            }));
+        }
+
+        Some(Ok(WalFrame {
+            len: len as u32,
+            crc,
+            payload: payload_buf.to_vec(),
+        }))
+    }
+}
+
+pub struct WalEntryHeader {
+    pub tag: u8,
+    pub tx: TxId,
+    pub series: SeriesId,
+    pub block: BlockNumber,
+}
+
+impl WalEntryHeader {
+    pub fn peek(bytes: &mut [u8]) -> Result<Self, WalError> {
+        // Use your Cursor helper to read just the first few fields
+        let mut cursor = Cursor { buf: bytes, pos: 0 };
+        let tag = cursor.read_u8();
+        let tx = TxId(cursor.read_u64());
+        let series = SeriesId(
+            NonZero::new(cursor.read_u64()).ok_or(WalError::Serialization("0 series id".into()))?,
+        );
+        let block = BlockNumber(cursor.read_u64());
+
+        Ok(Self {
+            tag,
+            tx,
+            series,
+            block,
+        })
+    }
 }
