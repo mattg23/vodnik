@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-vodnik-core = { path = "../vodnik-core" }
+vodnik-core = { path = "../core" }
 
 clap = { version = "4.5.54", features = ["derive"] }
 reqwest = { version = "0.13.1", features = ["json"] }

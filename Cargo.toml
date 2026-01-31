@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "vodnik-core",
-    "vodnik-server",
-    "vodnik-cli",
+    "core",
+    "server",
+    "cli",
 ]
 resolver = "2"
 
