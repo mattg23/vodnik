@@ -40,9 +40,11 @@ pub enum WalError {
 #[derive(Clone, Copy, Debug, PartialEq, Hash, Eq, Ord, PartialOrd)]
 pub struct TxId(pub u64);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum WalSync {
     Immediate,
+    // TODO: enforce some sensible range here
+    FixedTimeMillis(NonZero<u128>),
 }
 
 pub enum WalEntry<T: StorableNum> {

@@ -1,16 +1,17 @@
 use std::{
     env,
+    num::NonZero,
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
 use axum::{Router, extract::DefaultBodyLimit, routing::get};
 use opendal::Operator;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
-use tracing::{info, level_filters::LevelFilter};
+use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::{EnvFilter, prelude::*};
 
 use crate::{
@@ -74,15 +75,16 @@ async fn main() -> anyhow::Result<()> {
     let wal_config = WalConfig {
         dir: wal_dir.clone(),
         max_file_size: 128 * 1024 * 1024,
-        sync_mode: WalSync::Immediate,
+        sync_mode: WalSync::FixedTimeMillis(NonZero::new(500).unwrap()),
     };
 
+    let wal_ptr = Arc::new(Mutex::new(Wal::new(wal_config.clone())?));
     let state = AppState {
         meta_store: store,
         storage: op,
         block_meta: block_store,
         hot: Arc::new(HotSet::new()),
-        wal: Arc::new(Mutex::new(Wal::new(wal_config)?)),
+        wal: wal_ptr.clone(),
     };
 
     // recovery
@@ -97,6 +99,19 @@ async fn main() -> anyhow::Result<()> {
 
     let port = 8123;
 
+    let stop_timer = Arc::new(AtomicBool::new(false));
+
+    let handle = if let WalSync::FixedTimeMillis(ms) = wal_config.sync_mode {
+        let stop_timer_ref = stop_timer.clone();
+        Some(wal::create_background_flush_task(
+            ms.get() as u64,
+            wal_ptr,
+            stop_timer_ref,
+        ))
+    } else {
+        None
+    };
+
     let app = Router::new()
         .route("/health", get(health))
         .merge(api::routes())
@@ -110,7 +125,21 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .unwrap();
-    axum::serve(listener, app).await?;
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to install CTRL+C handler");
+        })
+        .await?;
+
+    if let Some(handle) = handle {
+        stop_timer.store(true, Ordering::Release);
+        info!("Waiting for flush timer to exit");
+        _ = handle.await;
+    }
+
     Ok(())
 }
 

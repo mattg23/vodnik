@@ -2,10 +2,15 @@ use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
-use tracing::info;
+use tokio::task::JoinHandle;
+use tracing::{debug, info};
 use vodnik_core::{
     meta::{BlockWritable, SeriesMeta, StorableNum, WriteBatch},
     wal::{
@@ -21,7 +26,7 @@ pub fn next_txid() -> u64 {
     TXID.fetch_add(1, Ordering::SeqCst)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WalConfig {
     pub dir: PathBuf,
     pub max_file_size: u64,
@@ -35,6 +40,13 @@ pub struct Wal {
     next_file_idx: u32,
     current_size: u64,
     write_buffer: Vec<u8>,
+    last_write_ts: Instant,
+}
+
+#[derive(Debug, PartialEq)]
+enum FlushResult {
+    Flushed(Instant),
+    Pending,
 }
 
 impl Wal {
@@ -49,6 +61,7 @@ impl Wal {
             next_file_idx: 0,
             current_size: 0,
             write_buffer: Vec::with_capacity(4 * 1024 * 1024),
+            last_write_ts: Instant::now(),
         };
 
         Ok(_self)
@@ -60,7 +73,7 @@ impl Wal {
             self.open_next_log()?;
         }
 
-        let result = if let Some(file) = &mut self.current_file {
+        if let Some(file) = &mut self.current_file {
             let req_size = entry.storage_size_bytes();
             if self.write_buffer.len() < req_size {
                 self.write_buffer.resize(req_size, 0);
@@ -79,21 +92,52 @@ impl Wal {
 
             frame.write(&mut *file)?;
             self.current_size += frame_size as u64;
-
-            match self.config.sync_mode {
-                WalSync::Immediate => file.sync_data().map_err(WalError::SyncFailed)?,
-            };
-
             Ok(())
+        } else {
+            Err(WalError::Config("Not initialized yet".to_string()))
+        }?;
+
+        self.flush_rotate_if_needed(false)
+    }
+
+    pub(crate) fn flush_rotate_if_needed(&mut self, force: bool) -> Result<(), WalError> {
+        let f_res = if let Some(file) = &mut self.current_file {
+            if force {
+                file.sync_data().map_err(WalError::SyncFailed)?;
+                Ok(FlushResult::Flushed(Instant::now()))
+            } else {
+                match self.config.sync_mode {
+                    WalSync::Immediate => {
+                        file.sync_data().map_err(WalError::SyncFailed)?;
+                        Ok(FlushResult::Flushed(Instant::now()))
+                    }
+                    WalSync::FixedTimeMillis(ms) => {
+                        let now = Instant::now();
+                        if self.last_write_ts.elapsed().as_millis() > ms.get() {
+                            file.sync_data().map_err(WalError::SyncFailed)?;
+                            Ok(FlushResult::Flushed(now))
+                        } else {
+                            Ok(FlushResult::Pending)
+                        }
+                    }
+                }
+            }
         } else {
             Err(WalError::Config("Not initialized yet".to_string()))
         };
 
-        if self.current_size > self.config.max_file_size {
-            self.rotate()?;
+        match f_res {
+            Ok(f_result) => match f_result {
+                FlushResult::Flushed(_) => {
+                    if self.current_size > self.config.max_file_size {
+                        self.rotate()?;
+                    }
+                    Ok(())
+                }
+                FlushResult::Pending => Ok(()),
+            },
+            Err(e) => Err(e),
         }
-
-        result
     }
 
     fn open_next_log(&mut self) -> Result<(), WalError> {
@@ -274,4 +318,24 @@ pub fn cleanup_wal_files(wal_dir: PathBuf) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn create_background_flush_task(
+    ms: u64,
+    wal: Arc<Mutex<Wal>>,
+    stop_signal: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    let mut timer = tokio::time::interval(std::time::Duration::from_millis(ms));
+    tokio::spawn(async move {
+        loop {
+            if stop_signal.load(Ordering::Relaxed) {
+                return;
+            }
+            timer.tick().await;
+            match wal.try_lock().map(|mut m| m.flush_rotate_if_needed(true)) {
+                Ok(_) => debug!("WalSync::FixedTimeMillis executed"),
+                Err(err) => debug!("WalSync::FixedTimeMillis failed: {err:?}"),
+            };
+        }
+    })
 }
