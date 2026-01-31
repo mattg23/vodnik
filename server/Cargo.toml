@@ -8,7 +8,7 @@ license.workspace = true
 vodnik-core = { path = "../core" }
 
 anyhow = "1.0.100"
-axum = "0.8.7"
+axum = { version = "0.8.7", features = ["http2", "default"] }
 bytes = "1.11.0"
 dashmap = "6.1.0"
 num-traits = { workspace = true }

@@ -6,9 +6,18 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::Instant,
 };
 
-use axum::{Router, extract::DefaultBodyLimit, routing::get};
+use axum::{
+    Router,
+    body::Body,
+    extract::DefaultBodyLimit,
+    http::{HeaderValue, Request},
+    middleware::Next,
+    response::Response,
+    routing::get,
+};
 use opendal::Operator;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::{debug, info, level_filters::LevelFilter, warn};
@@ -76,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         dir: wal_dir.clone(),
         max_file_size: 128 * 1024 * 1024,
         sync_mode: WalSync::FixedTimeMillis(NonZero::new(500).unwrap()),
+        //sync_mode: WalSync::Immediate,
     };
 
     let wal_ptr = Arc::new(Mutex::new(Wal::new(wal_config.clone())?));
@@ -115,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .merge(api::routes())
+        .layer(axum::middleware::from_fn(timing_middleware))
         .layer(DefaultBodyLimit::max(500 * 1024 * 1024))
         .layer(
             TraceLayer::new_for_http()
@@ -151,4 +162,18 @@ async fn health() -> &'static str {
     } else {
         VODNIK_ASCII_REV
     }
+}
+
+async fn timing_middleware(req: Request<Body>, next: Next) -> Response {
+    let start = Instant::now();
+    let mut response = next.run(req).await;
+    let elapsed_ms = start.elapsed().as_millis();
+
+    dbg!(elapsed_ms);
+
+    if let Ok(value) = HeaderValue::from_str(&elapsed_ms.to_string()) {
+        response.headers_mut().insert("x-vodnik-service-ms", value);
+    }
+
+    response
 }

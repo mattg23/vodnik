@@ -1,11 +1,14 @@
 use std::{
     num::NonZero,
+    ops::Range,
     path::PathBuf,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    sync::Arc,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::Client;
+use tokio::{sync::Semaphore, task::JoinSet};
 use vodnik_core::{
     api::{BatchIngest, ValueVec},
     codec,
@@ -53,6 +56,18 @@ enum Commands {
         /// Quality flag to apply to all points
         #[arg(long, default_value_t = 192)]
         quality: u8,
+
+        /// batch_size per request. if unset send all data in one request
+        #[arg(long)]
+        batch_size: Option<u64>,
+
+        /// send batches in parallel
+        #[arg(long, default_value_t = true)]
+        parallel: bool,
+
+        /// max parallel requests
+        #[arg(long, default_value_t = 32)]
+        max_in_flight: usize,
     },
 
     /// inspect a local block file
@@ -113,7 +128,24 @@ async fn main() -> anyhow::Result<()> {
             start,
             quality,
             stype,
-        } => generate_data(&cli, series_id, count, pattern, start, quality, stype).await?,
+            batch_size,
+            parallel,
+            max_in_flight,
+        } => {
+            generate_data(
+                &cli,
+                series_id,
+                count,
+                pattern,
+                start,
+                quality,
+                stype,
+                batch_size,
+                parallel,
+                max_in_flight,
+            )
+            .await?
+        }
         Commands::InspectBlock { path, head } => inspect_block(path, head)?,
         Commands::InspectWal { path, mode } => inspect_wal(path, mode)?,
     }
@@ -162,6 +194,9 @@ async fn generate_data(
     start: Option<u64>,
     quality: u8,
     stype: StorageType,
+    batch_size: Option<u64>,
+    parallel: bool,
+    max_in_flight: usize,
 ) -> anyhow::Result<()> {
     let start_ts = start.unwrap_or_else(|| {
         let now = SystemTime::now()
@@ -187,34 +222,140 @@ async fn generate_data(
         qs.push(Quality(quality));
     }
 
-    // 3. Send Request
-    let payload = BatchIngest {
-        series: SeriesId(series_id),
-        ts: ts,
-        qs: qs,
-        vals,
-    };
+    let client = Client::builder()
+        .pool_max_idle_per_host(16)
+        .http2_prior_knowledge()
+        .pool_idle_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(60))
+        .build()?;
 
-    let client = Client::new();
     let target_url = format!("{}/batch", cli.url);
 
-    let start = Instant::now();
-    let resp = client.post(&target_url).json(&payload).send().await?;
-    let duration = start.elapsed();
+    let batch_size = batch_size.map(|v| v as usize).unwrap_or(count);
 
-    println!("<-- Status: {} (took {:.2?})", resp.status(), duration);
+    let total_start = Instant::now();
 
-    if !resp.status().is_success() {
-        let error_text = resp.text().await?;
-        println!("    Error Body: {}", error_text);
-    } else {
+    if !parallel {
+        let mut sent = 0usize;
+        for offset in (0..count).step_by(batch_size) {
+            let end = (offset + batch_size).min(count);
+
+            let payload = BatchIngest {
+                series: SeriesId(series_id),
+                ts: ts[offset..end].to_vec(),
+                qs: qs[offset..end].to_vec(),
+                vals: slice_values(&vals, offset..end),
+            };
+
+            let batch_start = Instant::now();
+            let resp = client.post(&target_url).json(&payload).send().await?;
+            let duration = batch_start.elapsed();
+
+            println!(
+                "<-- Batch {}–{}: {} (took {:.2?})",
+                offset,
+                end,
+                resp.status(),
+                duration
+            );
+
+            if !resp.status().is_success() {
+                let error_text = resp.text().await?;
+                println!("    Error Body: {}", error_text);
+                return Ok(()); // stop on first failure
+            }
+
+            sent += end - offset;
+        }
+        let total_duration = total_start.elapsed();
         println!(
-            "    Success! Written {} points in {}ms.",
-            count,
-            duration.as_millis()
+            "    Success! Written {} points in {} batches ({} ms total).",
+            sent,
+            (count + batch_size - 1) / batch_size,
+            total_duration.as_millis()
         );
+        Ok(())
+    } else {
+        let semaphore = Arc::new(Semaphore::new(max_in_flight));
+
+        let mut join_set = JoinSet::new();
+        let mut batch_count = 0usize;
+
+        for offset in (0..count).step_by(batch_size) {
+            let sem = semaphore.clone();
+            let permit = sem.clone().acquire_owned().await?;
+
+            let end = (offset + batch_size).min(count);
+            batch_count += 1;
+
+            let payload = BatchIngest {
+                series: SeriesId(series_id),
+                ts: ts[offset..end].to_vec(),
+                qs: qs[offset..end].to_vec(),
+                vals: slice_values(&vals, offset..end),
+            };
+
+            let client = client.clone();
+            let url = target_url.clone();
+
+            join_set.spawn(async move {
+                let _permit = permit;
+                let start = Instant::now();
+                let resp = client.post(&url).json(&payload).send().await?;
+                let status = resp.status();
+                let service_ms = resp
+                    .headers()
+                    .get("x-vodnik-service-ms")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u128>().ok());
+                let dur = match service_ms {
+                    Some(ms) => Duration::from_millis(ms as u64),
+                    None => start.elapsed(),
+                };
+                Ok::<_, anyhow::Error>((offset, end, status, dur))
+            });
+        }
+
+        let mut sent = 0usize;
+
+        while let Some(res) = join_set.join_next().await {
+            let (offset, end, resp, duration) = res??;
+
+            println!(
+                "<-- Batch {}–{}: {} (took {:.2?})",
+                offset, end, resp, duration
+            );
+
+            if !resp.is_success() {
+                println!("    Error status: {}", resp);
+                return Ok(());
+            }
+
+            sent += end - offset;
+        }
+
+        let total_duration = total_start.elapsed();
+        println!(
+            "--> Success! Written {} points in {} batches ({} ms total).",
+            sent,
+            batch_count,
+            total_duration.as_millis()
+        );
+
+        Ok(())
     }
-    Ok(())
+}
+
+fn slice_values(vals: &ValueVec, range: Range<usize>) -> ValueVec {
+    match vals {
+        ValueVec::F32(items) => ValueVec::F32(items[range].to_vec()),
+        ValueVec::F64(items) => ValueVec::F64(items[range].to_vec()),
+        ValueVec::I32(items) => ValueVec::I32(items[range].to_vec()),
+        ValueVec::I64(items) => ValueVec::I64(items[range].to_vec()),
+        ValueVec::U32(items) => ValueVec::U32(items[range].to_vec()),
+        ValueVec::U64(items) => ValueVec::U64(items[range].to_vec()),
+        ValueVec::Enum(items) => ValueVec::Enum(items[range].to_vec()),
+    }
 }
 
 fn generate_values(stype: StorageType, len: usize, pattern: Pattern) -> ValueVec {
