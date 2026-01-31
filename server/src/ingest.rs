@@ -88,7 +88,7 @@ async fn batch_writes<T: BlockWritable>(
     write_chunk(&state, &batch, false).await
 }
 
-fn write_batch_to_val<T: StorableNum>(
+fn write_batch_to_wal<T: StorableNum>(
     state: &AppState,
     batch: &WriteBatch<'_, T>,
 ) -> Result<(), ApiError> {
@@ -124,7 +124,7 @@ pub(crate) async fn write_chunk<'a, T: BlockWritable>(
     const MAX_RETRIES: u32 = 3; // TODO: settings!
     let mut attempt = 0;
     if !replay {
-        write_batch_to_val(state, &batch)?;
+        write_batch_to_wal(state, &batch)?;
     }
 
     loop {
