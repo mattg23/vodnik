@@ -23,6 +23,8 @@ tower-http = { version = "0.6.8", features = ["trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 ulid = "1.2.1"
+chrono = "0.4.43"
+chrono-tz = { version = "0.10.4", features = ["case-insensitive"] }
 
 [profile.release]
 codegen-units = 1

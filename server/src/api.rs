@@ -15,7 +15,7 @@ use crate::{
     crud::{create_series, delete_series, read_series, update_series},
     ingest::batch_ingest,
     meta::{MetaStoreError, block::BlockMetaStoreError},
-    query::read_single_block,
+    query::{read_single_block, read_single_series_simple},
 };
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -25,6 +25,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/series/{id}", get(read_series))
         .route("/series/{id}", patch(update_series))
         .route("/series/{id}", delete(delete_series))
+        .route("/series/{id}/read", post(read_single_series_simple))
         .route(
             "/series/{series_id}/block/{block_id}",
             get(read_single_block),

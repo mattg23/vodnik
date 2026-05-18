@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
 
-use crate::meta::{Quality, SeriesId, StorageType};
+use crate::meta::{Quality, SeriesId, StorableNum, StorageType};
 
 #[derive(Debug, Error)]
 pub enum IngestError {
@@ -118,4 +118,34 @@ impl ValueVec {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn create_empty<T: StorableNum>() {}
+    pub fn create<T>(values: Vec<T>) -> Self
+    where
+        T: IntoValueVec,
+    {
+        T::into_value_vec(values)
+    }
 }
+
+pub trait IntoValueVec: StorableNum {
+    fn into_value_vec(values: Vec<Self>) -> ValueVec;
+}
+
+macro_rules! impl_into_value_vec {
+    ($ty:ty, $variant:ident) => {
+        impl IntoValueVec for $ty {
+            fn into_value_vec(values: Vec<Self>) -> ValueVec {
+                ValueVec::$variant(values)
+            }
+        }
+    };
+}
+
+impl_into_value_vec!(f32, F32);
+impl_into_value_vec!(f64, F64);
+impl_into_value_vec!(i32, I32);
+impl_into_value_vec!(i64, I64);
+impl_into_value_vec!(u32, U32);
+impl_into_value_vec!(u64, U64);
+impl_into_value_vec!(u8, Enum);

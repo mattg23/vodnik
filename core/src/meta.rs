@@ -475,6 +475,28 @@ pub trait BlockWritable: StorableNum {
     fn new_sized_block(len: usize) -> SizedBlock;
 }
 
+pub trait BlockReadable: StorableNum {
+    fn read_from_block(
+        block: &SizedBlock,
+        vals: &mut Vec<Self>,
+        qs: &mut Vec<Quality>,
+        ts: &mut Vec<u64>,
+        bn: &BlockNumber,
+        series: &SeriesMeta,
+    );
+
+    fn read_from_block_range(
+        block: &SizedBlock,
+        vals: &mut Vec<Self>,
+        qs: &mut Vec<Quality>,
+        ts: &mut Vec<u64>,
+        bn: &BlockNumber,
+        series: &SeriesMeta,
+        left: Option<u64>,
+        right: Option<u64>,
+    );
+}
+
 macro_rules! impl_block_data_type {
     ($type:ty, $variant:ident) => {
         impl BlockWritable for $type {
@@ -513,6 +535,84 @@ macro_rules! impl_block_data_type {
                 )
             }
         }
+
+        impl BlockReadable for $type {
+            fn read_from_block(
+                block: &SizedBlock,
+                vals: &mut Vec<Self>,
+                qs: &mut Vec<Quality>,
+                ts: &mut Vec<u64>,
+                bn: &BlockNumber,
+                series: &SeriesMeta,
+            ) {
+                match block {
+                    SizedBlock::$variant(block_meta, bvals, bqs) => {
+                        let bl_start = helpers::get_block_start_as_offset(series, bn.0);
+                        let sample_t = helpers::get_sample_delta_t(series);
+                        for i in 0..bvals.len() {
+                            vals.push(bvals[i]);
+                            qs.push(bqs[i]);
+                            let sample_t_i = bl_start + (i as u64) * sample_t;
+                            ts.push(sample_t_i);
+                        }
+                    }
+                    other => {
+                        unreachable!(
+                            "Type Mismatch: Expected {}, got {}",
+                            stringify!($variant),
+                            std::any::type_name_of_val(&other)
+                        );
+                    }
+                }
+            }
+
+            fn read_from_block_range(
+                block: &SizedBlock,
+                vals: &mut Vec<Self>,
+                qs: &mut Vec<Quality>,
+                ts: &mut Vec<u64>,
+                bn: &BlockNumber,
+                series: &SeriesMeta,
+                left: Option<u64>,
+                right: Option<u64>,
+            ) {
+                match block {
+                    SizedBlock::$variant(block_meta, bvals, bqs) => {
+                        let bl_start = helpers::get_block_start_as_offset(series, bn.0);
+                        let bl_end = helpers::get_block_end_as_offset(series, bn.0);
+
+                        let samples_start_i = helpers::get_sample_offset(
+                            series,
+                            left.unwrap_or(bl_start).checked_sub(bl_start).unwrap_or(0),
+                        );
+                        let samples_end_i = helpers::get_sample_offset(
+                            series,
+                            (1 + right.unwrap_or(bl_end))
+                                .checked_sub(bl_start)
+                                .unwrap_or(0),
+                        );
+
+                        let samples_end_i = samples_end_i.min((1 + block_meta.lst_offset).into());
+
+                        let sample_t = helpers::get_sample_delta_t(series);
+
+                        for i in samples_start_i..samples_end_i {
+                            let sample_t_i = bl_start + (i as u64) * sample_t;
+                            vals.push(bvals[i as usize]);
+                            qs.push(bqs[i as usize]);
+                            ts.push(sample_t_i);
+                        }
+                    }
+                    other => {
+                        unreachable!(
+                            "Type Mismatch: Expected {}, got {}",
+                            stringify!($variant),
+                            std::any::type_name_of_val(&other)
+                        );
+                    }
+                }
+            }
+        }
     };
 }
 
@@ -527,6 +627,30 @@ impl_block_data_type!(u8, U8Block);
 impl SizedBlock {
     pub fn write<T: BlockWritable>(&mut self, batch: &WriteBatch<T>) {
         T::write_to_block(self, batch);
+    }
+
+    pub fn read<T: BlockReadable>(
+        block: &SizedBlock,
+        vals: &mut Vec<T>,
+        qs: &mut Vec<Quality>,
+        ts: &mut Vec<u64>,
+        bn: &BlockNumber,
+        series: &SeriesMeta,
+    ) {
+        T::read_from_block(block, vals, qs, ts, bn, series)
+    }
+
+    pub fn read_from_block_range<T: BlockReadable>(
+        block: &SizedBlock,
+        vals: &mut Vec<T>,
+        qs: &mut Vec<Quality>,
+        ts: &mut Vec<u64>,
+        bn: &BlockNumber,
+        series: &SeriesMeta,
+        left: Option<u64>,
+        right: Option<u64>,
+    ) {
+        T::read_from_block_range(block, vals, qs, ts, bn, series, left, right)
     }
 
     pub fn new<T: BlockWritable>(len: usize) -> SizedBlock {
@@ -606,6 +730,7 @@ impl std::fmt::Display for SeriesId {
 pub struct SeriesMeta {
     pub id: SeriesId,
     pub name: String,
+    pub tz: String,
     pub storage_type: StorageType,
     pub block_length: BlockLength,
     pub block_resolution: TimeResolution,

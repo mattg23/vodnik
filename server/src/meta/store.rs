@@ -140,6 +140,7 @@ pub struct Model {
     pub first: i64,
     pub last: i64,
     pub labels: DbLabels,
+    pub tz: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -180,6 +181,7 @@ fn model_to_meta(m: Model) -> SeriesMeta {
         first_block: BlockNumber(m.first as u64),
         last_block: BlockNumber(m.last as u64),
         labels: m.labels.0,
+        tz: m.tz,
     }
 }
 
@@ -200,6 +202,7 @@ impl SqlMetaStore {
             first: Set(series.first_block.0 as i64),
             last: Set(series.last_block.0 as i64),
             labels: Set(DbLabels(series.labels.clone())),
+            tz: Set(series.tz.clone()),
             ..Default::default()
         };
 
@@ -243,6 +246,7 @@ impl SqlMetaStore {
         model.first = Set(series.first_block.0 as i64);
         model.last = Set(series.last_block.0 as i64);
         model.labels = Set(DbLabels(series.labels.clone()));
+        model.tz = Set(series.tz.clone());
 
         model.update(&self.db).await.map_err(orm_err)?;
 

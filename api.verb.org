@@ -37,6 +37,7 @@ Content-Type: application/json
   "storage_type": "Float32",
   "sample_length": 1,
   "sample_resolution": "Second",
+  "tz_id": "Europe/Berlin",
   "labels": [
     { "name": "unit", "value": "celsius" },
     { "name": "location", "value": "garden" }
@@ -44,7 +45,7 @@ Content-Type: application/json
 }
 
 ** get series :verb:
-get /series/14
+get /series/1
 Content-Type: application/json
 
 ** update series                                                       :verb:
@@ -60,7 +61,15 @@ Content-Type: application/json
 }
 
 ** read a single block                                                 :verb:
-get /series/14/block/81798
+get /series/1/block/988384
 Content-Type: application/json
 
 
+** read last 30m :verb:
+POST /series/1/read
+Content-Type: application/json
+
+{
+  "ts_left": "2026-05-18 11:30:00",
+  "ts_right": "2026-05-18 11:30:05"
+}

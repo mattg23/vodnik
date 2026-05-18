@@ -9,9 +9,18 @@ pub fn get_block_start_as_offset(meta: &SeriesMeta, block_id: u64) -> u64 {
     res * block_id * meta.block_length.0.get()
 }
 
+pub fn get_block_end_as_offset(meta: &SeriesMeta, block_id: u64) -> u64 {
+    let block_res: u64 = meta.block_resolution.into();
+    get_block_start_as_offset(meta, block_id) + block_res * meta.block_length.0.get()
+}
+
 pub fn get_block_id(meta: &SeriesMeta, unix_ms: u64) -> u64 {
     let res: u64 = meta.block_resolution.into();
     unix_ms / (meta.block_length.0.get() * res)
+}
+
+pub fn get_sample_delta_t(meta: &SeriesMeta) -> u64 {
+    duration(meta.sample_resolution, meta.sample_length.0)
 }
 
 pub fn get_sample_offset(meta: &SeriesMeta, delta_from_block_start: u64) -> u64 {

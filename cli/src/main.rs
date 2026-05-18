@@ -48,7 +48,7 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = StorageType::Float32)]
         stype: StorageType,
 
-        /// Start Timestamp (Unix Seconds).
+        /// Start Timestamp (Unix Milliseconds).
         /// If not provided, defaults to NOW - count (Liveish data)
         #[arg(long)]
         start: Option<u64>,

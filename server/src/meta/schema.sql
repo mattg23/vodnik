@@ -9,7 +9,8 @@ CREATE TABLE series (
     sample_res TEXT NOT NULL,
     first INTEGER NOT NULL,
     last INTEGER NOT NULL,
-    labels TEXT NOT NULL
+    labels TEXT NOT NULL,
+    tz TEXT NOT NULL
 );
 
 
@@ -21,22 +22,22 @@ CREATE TABLE blocks (
     count_valid INTEGER NOT NULL,
 
     sum_val BLOB,       -- Serialized Accumulator (i128/u128/f64)
-    min_val NUMERIC,    
-    max_val NUMERIC,
+    min_val REAL,    
+    max_val REAL,
 
-    fst_valid_val NUMERIC,
+    fst_valid_val REAL,
     fst_valid_q INTEGER, 
     fst_valid_offset INTEGER,
 
-    lst_valid_val NUMERIC,
+    lst_valid_val REAL,
     lst_valid_q INTEGER,
     lst_valid_offset INTEGER,
 
-    fst_val NUMERIC,
+    fst_val REAL,
     fst_q INTEGER,
     fst_offset INTEGER,
 
-    lst_val NUMERIC,
+    lst_val REAL,
     lst_q INTEGER,
     lst_offset INTEGER,
 

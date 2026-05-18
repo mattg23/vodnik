@@ -49,6 +49,7 @@ pub struct CreateSeries {
     pub sample_length: SampleLength,
     pub sample_resolution: TimeResolution,
     pub labels: Vec<Label>,
+    pub tz_id: String,
 }
 
 impl From<&CreateSeries> for SeriesMeta {
@@ -73,6 +74,7 @@ impl From<&CreateSeries> for SeriesMeta {
             first_block: BlockNumber(0),
             last_block: BlockNumber(0),
             labels: value.labels.clone(),
+            tz: value.tz_id.clone(),
         }
     }
 }
