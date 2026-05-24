@@ -256,15 +256,23 @@ impl<T: StorableNum> BlockMeta<T> {
         self.min = T::max_value();
         self.max = T::min_value();
 
+        self.fst = T::zero();
+        self.lst = T::zero();
+
         self.fst_offset = u32::MAX;
         self.lst_offset = u32::MIN;
-        self.fst = T::zero();
+
         self.fst_q = Quality::MISSING;
+        self.lst_q = Quality::MISSING;
+
+        self.fst_valid = T::zero();
+        self.lst_valid = T::zero();
 
         self.fst_valid_offset = u32::MAX;
         self.lst_valid_offset = u32::MIN;
-        self.fst_valid = T::zero();
+
         self.fst_valid_q = Quality::MISSING;
+        self.lst_valid_q = Quality::MISSING;
 
         // Reset masks
         self.qual_acc_or = 0;
@@ -546,7 +554,7 @@ macro_rules! impl_block_data_type {
                 series: &SeriesMeta,
             ) {
                 match block {
-                    SizedBlock::$variant(block_meta, bvals, bqs) => {
+                    SizedBlock::$variant(_block_meta, bvals, bqs) => {
                         let bl_start = helpers::get_block_start_as_offset(series, bn.0);
                         let sample_t = helpers::get_sample_delta_t(series);
                         for i in 0..bvals.len() {

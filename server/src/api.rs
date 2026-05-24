@@ -15,7 +15,7 @@ use crate::{
     crud::{create_series, delete_series, read_series, update_series},
     ingest::batch_ingest,
     meta::{MetaStoreError, block::BlockMetaStoreError},
-    query::{read_single_block, read_single_series_simple},
+    query::{read_single_block, read_single_series_simple, validate_query},
 };
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -30,6 +30,7 @@ pub(crate) fn routes() -> Router<AppState> {
             "/series/{series_id}/block/{block_id}",
             get(read_single_block),
         )
+        .route("/query/validate", post(validate_query))
 }
 
 #[derive(Debug, Error)]

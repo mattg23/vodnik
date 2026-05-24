@@ -73,3 +73,214 @@ Content-Type: application/json
   "ts_left": "2026-05-18 11:30:00",
   "ts_right": "2026-05-18 11:30:05"
 }
+
+** Validate / Play query                                               :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "UTC",
+    "timestamp": "2022-05-11 11:30:00"
+  },
+  "grid_duration": { "Fixed": [1, "Hour"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+
+** validate query ok utc fixedcount :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "UTC",
+    "timestamp": "2022-05-11 11:30:00"
+  },
+  "grid_duration": { "Fixed": [1, "Hour"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+** validate query ok series local fixed duration :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-05-11 11:30:00"
+  },
+  "grid_duration": { "Fixed": [4, "Hour"] },
+  "slot_layout": { "FixedDuration": [1, "Hour"] },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+** validate query ok calendar day :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-05-11 00:00:00"
+  },
+  "grid_duration": { "Calendar": [1, "Day"] },
+  "slot_layout": { "FixedDuration": [6, "Hour"] },
+  "slot_accumulation": { "function": "Sum", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+** validate query ok calendar day - spring dst                         :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-03-29 00:00:00"
+  },
+  "grid_duration": { "Calendar": [1, "Day"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+** validate query ok calendar day - fall dst                          :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-10-25 00:00:00"
+  },
+  "grid_duration": { "Calendar": [1, "Day"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+** validate query err ambiguous local time :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-10-25 02:30:00"
+  },
+  "grid_duration": { "Fixed": [1, "Hour"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+** validate query ok ambiguous earlier :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-10-25 02:30:00"
+  },
+  "grid_duration": { "Fixed": [1, "Hour"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Earlier", "nonexistent": "Reject" }
+}
+
+** validate query ok ambiguous later :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-10-25 02:30:00"
+  },
+  "grid_duration": { "Fixed": [1, "Hour"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Later", "nonexistent": "Reject" }
+}
+
+** validate query err keepboth ref time :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-10-25 02:30:00"
+  },
+  "grid_duration": { "Fixed": [1, "Hour"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "KeepBoth", "nonexistent": "Reject" }
+}
+
+** validate query err nonexistent local time :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-03-29 02:30:00"
+  },
+  "grid_duration": { "Fixed": [1, "Hour"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+** validate query err invalid timezone :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": {
+      "TimezoneId": "Europe/Atlantis"
+    },
+    "timestamp": "2026-05-11 11:30:00"
+  },
+  "grid_duration": { "Fixed": [1, "Hour"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
+
+** validate query err calendar end ambiguous :verb:
+POST /query/validate
+Content-Type: application/json
+
+{
+  "series_id": 1,
+  "ref_time": {
+    "timezone_style": "SeriesLocal",
+    "timestamp": "2026-10-24 02:30:00"
+  },
+  "grid_duration": { "Calendar": [1, "Day"] },
+  "slot_layout": { "FixedCount": 4 },
+  "slot_accumulation": { "function": "Avg", "qual_filter": "GoodOnly" },
+  "dst_resolution": { "ambiguous": "Reject", "nonexistent": "Reject" }
+}
