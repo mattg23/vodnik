@@ -10,7 +10,7 @@ post /batch
 Content-Type: application/json
 
 {
-  "series": 14,
+  "series": 1,
   "ts": [1777111429344],
   "values":  [4242.123],
   "qs": [192],
@@ -22,9 +22,10 @@ post /batch
 Content-Type: application/json
 
 {
-  "series": 14,
+  "series": 1,
   "ts": [1767111429344],
   "values":  [1337,229],
+  "qs": [192,192],
   "type": "f32"
 }
 

@@ -11,3 +11,4 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 rkyv = "0.8.12"
 crc = "3.4.0"
+jiff = "0.2.25"

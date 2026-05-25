@@ -4,8 +4,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use chrono::{DateTime, TimeZone};
-use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
 use crate::{AppState, api::ApiError, persistence};
@@ -15,6 +13,10 @@ use vodnik_core::{
     meta::{
         BinaryAccumulator, BlockNumber, BlockReadable, Quality, SeriesId, SeriesMeta, SizedBlock,
         StorableNum, StorageType,
+    },
+    time::{
+        AmbiguousTimeResolution, DstResolution, VodnikCalendarPeriod, VodnikFixedPeriod,
+        VodnikLocalDateTime, VodnikTimezoneId, VodnikZonedDateTime, ZoningResult,
     },
 };
 
@@ -83,7 +85,7 @@ pub enum CalendarUnit {
 #[derive(Debug, Deserialize)]
 pub enum GridDuration {
     Fixed(NonZero<u32>, FixedUnit),
-    Calendar(NonZero<u32>, CalendarUnit),
+    Calendar(NonZero<u16>, CalendarUnit),
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +101,7 @@ pub struct TimestampTxt(pub String); // newtype for validation
 #[derive(Debug, Deserialize)]
 pub enum SlotLayout {
     FixedCount(NonZero<u32>), // equally spaced up to ms -> gridduration / count
-    Calendar(NonZero<u32>, CalendarUnit), // grid duration / slot duration (where / has to "somewhat" match)
+    Calendar(NonZero<u16>, CalendarUnit), // grid duration / slot duration (where / has to "somewhat" match)
     FixedDuration(NonZero<u32>, FixedUnit), // Fixed XX ms intervals as much as we can fit
 }
 
@@ -132,27 +134,6 @@ pub struct GridAnchor {
 }
 
 #[derive(Debug, Deserialize)]
-pub enum AmbiguousTimeResolution {
-    Reject,
-    Earlier,
-    Later,
-    KeepBoth,
-}
-
-#[derive(Debug, Deserialize)]
-pub enum NonexistentTimeResolution {
-    Reject,
-    ShiftForward,
-    ShiftBackward,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DstResolution {
-    pub ambiguous: AmbiguousTimeResolution,
-    pub nonexistent: NonexistentTimeResolution,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct GridQuery {
     pub series_id: SeriesId,         // pub struct SeriesId(pub NonZero<u64>)
     pub ref_time: GridAnchor,        // aka: seriesLocal + "2026-05-11 11:30" basically grid start
@@ -164,14 +145,14 @@ pub struct GridQuery {
 
 #[derive(Debug, Serialize)]
 pub struct ResolvedSlot {
-    pub start: DateTime<Tz>,
-    pub end: DateTime<Tz>,
+    pub start: VodnikZonedDateTime,
+    pub end: VodnikZonedDateTime,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ValidatedGridQuery {
-    pub start: DateTime<Tz>,
-    pub end: DateTime<Tz>,
+    pub start: VodnikZonedDateTime,
+    pub end: VodnikZonedDateTime,
     pub slots: Vec<ResolvedSlot>,
     pub accumulation: SlotAccumulator,
 }
@@ -203,7 +184,7 @@ impl GridQuery {
             None => return Err(errs),
         };
 
-        let end = match self.get_end(&start) {
+        let end = match self.get_end(&start, &mut errs) {
             Some(end) => end,
             None => {
                 errs.push(ValidationError::CalendarEndCouldNotBeResolved);
@@ -231,22 +212,26 @@ impl GridQuery {
         })
     }
 
-    fn estimate_slot_count(&self, start: &DateTime<Tz>, end: &DateTime<Tz>) -> Option<u64> {
-        let duration = *end - *start;
+    fn estimate_slot_count(
+        &self,
+        start: &VodnikZonedDateTime,
+        end: &VodnikZonedDateTime,
+    ) -> Option<u64> {
+        let duration = end.checked_duration_since(start)?;
 
         match &self.slot_layout {
             SlotLayout::FixedCount(n) => Some(n.get() as u64),
 
             SlotLayout::FixedDuration(n, unit) => {
                 let slot_duration = match unit {
-                    FixedUnit::Millisecond => chrono::TimeDelta::milliseconds(n.get() as i64),
-                    FixedUnit::Second => chrono::TimeDelta::seconds(n.get() as i64),
-                    FixedUnit::Minute => chrono::TimeDelta::minutes(n.get() as i64),
-                    FixedUnit::Hour => chrono::TimeDelta::hours(n.get() as i64),
+                    FixedUnit::Millisecond => VodnikFixedPeriod::from_ms(n.get() as u64),
+                    FixedUnit::Second => VodnikFixedPeriod::from_secs(n.get()),
+                    FixedUnit::Minute => VodnikFixedPeriod::from_mins(n.get()),
+                    FixedUnit::Hour => VodnikFixedPeriod::from_hours(n.get()),
                 };
 
-                let total_ms = duration.num_milliseconds();
-                let slot_ms = slot_duration.num_milliseconds();
+                let total_ms = duration.ms();
+                let slot_ms = slot_duration.ms();
 
                 if total_ms <= 0 || slot_ms <= 0 {
                     return None;
@@ -256,20 +241,23 @@ impl GridQuery {
             }
 
             SlotLayout::Calendar(n, unit) => {
-                let slot_duration_approx = match unit {
-                    CalendarUnit::Day => chrono::TimeDelta::days(n.get() as i64),
-                    CalendarUnit::Month => chrono::TimeDelta::days(28 * n.get() as i64),
-                    CalendarUnit::Year => chrono::TimeDelta::days(365 * n.get() as i64),
+                let slot_ms_approx = match unit {
+                    CalendarUnit::Day => VodnikFixedPeriod::from_hours(24).ms(),
+                    CalendarUnit::Month => {
+                        VodnikFixedPeriod::from_hours(24).ms() * (28 * n.get() as u64)
+                    }
+                    CalendarUnit::Year => {
+                        VodnikFixedPeriod::from_hours(24).ms() * (365 * n.get() as u64)
+                    }
                 };
 
-                let total_ms = duration.num_milliseconds();
-                let slot_ms = slot_duration_approx.num_milliseconds();
+                let total_ms = duration.ms();
 
-                if total_ms <= 0 || slot_ms <= 0 {
+                if total_ms <= 0 || slot_ms_approx <= 0 {
                     return None;
                 }
 
-                Some(Self::div_ceil_u64(total_ms as u64, slot_ms as u64))
+                Some(Self::div_ceil_u64(total_ms as u64, slot_ms_approx as u64))
             }
         }
     }
@@ -280,12 +268,12 @@ impl GridQuery {
 
     fn slottify(
         &self,
-        start: &DateTime<Tz>,
-        end: &DateTime<Tz>,
+        start: &VodnikZonedDateTime,
+        end: &VodnikZonedDateTime,
         errs: &mut Vec<ValidationError>,
     ) -> Option<Vec<ResolvedSlot>> {
-        let naive_duration = *end - start;
-        if naive_duration.is_zero() {
+        let duration = end.checked_duration_since(start)?;
+        if duration.is_zero() {
             // should not happen, bc all params are NonZero<_>
             errs.push(ValidationError::Other("grid duration is zero".to_string()));
             return None;
@@ -295,16 +283,17 @@ impl GridQuery {
             // fixed count is grid_duration / N -> resulting in arbitrary slot length
             SlotLayout::FixedCount(non_zero) => {
                 // checked_div only returns None if we divide by 0, so unwrap is okay
-                let slot_duration = naive_duration.checked_div(non_zero.get() as i32).unwrap();
+                let slot_duration_ms = duration.ms().checked_div(non_zero.get() as u64).unwrap();
+                let slot_duration = VodnikFixedPeriod::from_ms(slot_duration_ms);
                 let mut slot_left = start.clone();
                 let mut slot_right = start.clone();
                 let mut i = 0;
-                while slot_right < *end {
-                    slot_right = match slot_left.checked_add_signed(slot_duration) {
+                while &slot_right < end {
+                    slot_right = match slot_left.fixed_add(slot_duration) {
                         Some(slot_right) => slot_right,
                         None => {
                             errs.push(ValidationError::Other(format!(
-                            "cannot compute slot end for slot {i}; slot_left={slot_left:?}; slot_duration={slot_duration:}"
+                            "cannot compute slot end for slot {i}; slot_left={slot_left:?}; slot_duration={slot_duration:?}"
                             ))); // TODO: bail for now, lets capture the error cases, maybe we can resolve some of them later
                             return None;
                         }
@@ -314,7 +303,7 @@ impl GridQuery {
                         end: slot_right.clone(),
                     });
 
-                    slot_left = slot_right;
+                    slot_left = slot_right.clone();
 
                     i += 1;
                 }
@@ -324,21 +313,45 @@ impl GridQuery {
                 let mut slot_left = start.clone();
                 let mut slot_right = start.clone();
                 let mut i = 0;
-                while slot_right < *end {
-                    let maybe_right = match calendar_unit {
-                        CalendarUnit::Day => {
-                            slot_left.checked_add_days(chrono::Days::new(non_zero.get() as u64))
-                        }
-                        CalendarUnit::Month => {
-                            slot_left.checked_add_months(chrono::Months::new(non_zero.get()))
-                        }
-                        CalendarUnit::Year => {
-                            slot_left.checked_add_months(chrono::Months::new(12 * non_zero.get()))
-                        }
-                    };
 
-                    slot_right = match maybe_right {
-                        Some(slot_right) => slot_right,
+                let slot_duration = match calendar_unit {
+                    CalendarUnit::Day => VodnikCalendarPeriod {
+                        years: 0,
+                        months: 0,
+                        days: non_zero.get(),
+                    },
+                    CalendarUnit::Month => match u8::try_from(non_zero.get()) {
+                        Ok(m) => VodnikCalendarPeriod {
+                            years: 0,
+                            months: m,
+                            days: 0,
+                        },
+                        Err(_) => {
+                            errs.push(ValidationError::Other("cannot compute slot duration. Month calendar unit must be between 1 and 255".to_string()));
+                            return None;
+                        }
+                    },
+                    CalendarUnit::Year => match u8::try_from(non_zero.get()) {
+                        Ok(y) => VodnikCalendarPeriod {
+                            years: y,
+                            months: 0,
+                            days: 0,
+                        },
+                        Err(_) => {
+                            errs.push(ValidationError::Other("cannot compute slot duration. Year calendar unit must be between 1 and 255".to_string()));
+                            return None;
+                        }
+                    },
+                };
+
+                while &slot_right < end {
+                    slot_right = match slot_left
+                        .calendar_add_with_resolver(slot_duration, &self.dst_resolution)
+                    {
+                        Some(slot_right) => match self.apply_dst_resolution(slot_right, errs) {
+                            Some(slot_right) => slot_right,
+                            None => return None,
+                        },
                         None => {
                             errs.push(ValidationError::Other(format!(
                             "cannot compute slot end for slot {i}; slot_left={slot_left:?}; slot boundary lands on ambiguous or nonexistent timestamp"
@@ -352,29 +365,27 @@ impl GridQuery {
                         end: slot_right.clone(),
                     });
 
-                    slot_left = slot_right;
+                    slot_left = slot_right.clone();
 
                     i += 1;
                 }
             }
             SlotLayout::FixedDuration(non_zero, fixed_unit) => {
                 let slot_duration = match fixed_unit {
-                    FixedUnit::Millisecond => {
-                        chrono::TimeDelta::milliseconds(non_zero.get() as i64)
-                    }
-                    FixedUnit::Second => chrono::TimeDelta::seconds(non_zero.get() as i64),
-                    FixedUnit::Minute => chrono::TimeDelta::minutes(non_zero.get() as i64),
-                    FixedUnit::Hour => chrono::TimeDelta::hours(non_zero.get() as i64),
+                    FixedUnit::Millisecond => VodnikFixedPeriod::from_ms(non_zero.get() as u64),
+                    FixedUnit::Second => VodnikFixedPeriod::from_secs(non_zero.get()),
+                    FixedUnit::Minute => VodnikFixedPeriod::from_mins(non_zero.get()),
+                    FixedUnit::Hour => VodnikFixedPeriod::from_hours(non_zero.get()),
                 };
                 let mut slot_left = start.clone();
                 let mut slot_right = start.clone();
                 let mut i = 0;
-                while slot_right < *end {
-                    slot_right = match slot_left.checked_add_signed(slot_duration) {
+                while &slot_right < end {
+                    slot_right = match slot_left.fixed_add(slot_duration) {
                         Some(slot_right) => slot_right,
                         None => {
                             errs.push(ValidationError::Other(format!(
-                            "cannot compute slot end for slot {i}; slot_left={slot_left:?}; slot_duration={slot_duration:}"
+                            "cannot compute slot end for slot {i}; slot_left={slot_left:?}; slot_duration={slot_duration:?}"
                             ))); // TODO: bail for now, lets capture the error cases, maybe we can resolve some of them later
                             return None;
                         }
@@ -384,7 +395,7 @@ impl GridQuery {
                         end: slot_right.clone(),
                     });
 
-                    slot_left = slot_right;
+                    slot_left = slot_right.clone();
 
                     i += 1;
                 }
@@ -393,36 +404,86 @@ impl GridQuery {
         Some(slots)
     }
 
-    fn get_end(&self, start: &DateTime<Tz>) -> Option<DateTime<Tz>> {
-        let start_copy = start.clone();
+    fn get_end(
+        &self,
+        start: &VodnikZonedDateTime,
+        errs: &mut Vec<ValidationError>,
+    ) -> Option<VodnikZonedDateTime> {
         match &self.grid_duration {
             GridDuration::Fixed(non_zero, fixed_unit) => {
-                let time_delta = match fixed_unit {
-                    FixedUnit::Millisecond => {
-                        chrono::TimeDelta::milliseconds(non_zero.get() as i64)
-                    }
-                    FixedUnit::Second => chrono::TimeDelta::seconds(non_zero.get() as i64),
-                    FixedUnit::Minute => chrono::TimeDelta::minutes(non_zero.get() as i64),
-                    FixedUnit::Hour => chrono::TimeDelta::hours(non_zero.get() as i64),
+                let fixed_period = match fixed_unit {
+                    FixedUnit::Millisecond => VodnikFixedPeriod::from_ms(non_zero.get() as u64),
+                    FixedUnit::Second => VodnikFixedPeriod::from_secs(non_zero.get()),
+                    FixedUnit::Minute => VodnikFixedPeriod::from_mins(non_zero.get()),
+                    FixedUnit::Hour => VodnikFixedPeriod::from_hours(non_zero.get()),
                 };
-                start_copy.checked_add_signed(time_delta)
+                start.fixed_add(fixed_period)
             }
-            // TODO: chrono returns None for ambiguous or non existant
-            //       we wanna handle that ourselves later according to the users
-            //       resolver preference.
-            //       maybe chrono would like some try_add|sub_XXX functions?
-            GridDuration::Calendar(non_zero, calendar_unit) => match calendar_unit {
-                CalendarUnit::Day => {
-                    start_copy.checked_add_days(chrono::Days::new(non_zero.get() as u64))
-                }
-                CalendarUnit::Month => {
-                    start_copy.checked_add_months(chrono::Months::new(non_zero.get() as u32))
-                }
-                CalendarUnit::Year => {
-                    let months = non_zero.get().checked_mul(12)?;
-                    start_copy.checked_add_months(chrono::Months::new(months))
+            GridDuration::Calendar(non_zero, calendar_unit) => {
+                let zoning_result = match calendar_unit {
+                    CalendarUnit::Day => start.calendar_add_with_resolver(
+                        VodnikCalendarPeriod {
+                            years: 0,
+                            months: 0,
+                            days: non_zero.get(),
+                        },
+                        &self.dst_resolution,
+                    )?,
+                    CalendarUnit::Month => match u8::try_from(non_zero.get()) {
+                        Ok(m) => start.calendar_add_with_resolver(
+                            VodnikCalendarPeriod {
+                                years: 0,
+                                months: m,
+                                days: 0,
+                            },
+                            &self.dst_resolution,
+                        )?,
+                        Err(e) => {
+                            errs.push(ValidationError::Other("cannot compute end date. Month calendar unit must be between 1 and 255".to_string()));
+                            return None;
+                        }
+                    },
+                    CalendarUnit::Year => match u8::try_from(non_zero.get()) {
+                        Ok(y) => start.calendar_add_with_resolver(
+                            VodnikCalendarPeriod {
+                                years: y,
+                                months: 0,
+                                days: 0,
+                            },
+                            &self.dst_resolution,
+                        )?,
+                        Err(e) => {
+                            errs.push(ValidationError::Other("cannot compute end date. Year calendar unit must be between 1 and 255".to_string()));
+                            return None;
+                        }
+                    },
+                };
+
+                self.apply_dst_resolution(zoning_result, errs)
+            }
+        }
+    }
+
+    fn apply_dst_resolution(
+        &self,
+        zoning_result: ZoningResult,
+        errs: &mut Vec<ValidationError>,
+    ) -> Option<VodnikZonedDateTime> {
+        match zoning_result {
+            ZoningResult::Exact(vodnik_zoned) => Some(vodnik_zoned),
+            ZoningResult::Ambiguous { early, late } => match self.dst_resolution.ambiguous {
+                AmbiguousTimeResolution::Reject => None,
+                AmbiguousTimeResolution::Earlier => Some(early),
+                AmbiguousTimeResolution::Later => Some(late),
+                AmbiguousTimeResolution::KeepBoth => {
+                    errs.push(ValidationError::Other(
+                            "ref_time cannot use KeepBoth because the query needs one concrete end instant"
+                                .to_string(),
+                        ));
+                    return None;
                 }
             },
+            ZoningResult::Nonexistent => None,
         }
     }
 
@@ -430,7 +491,7 @@ impl GridQuery {
         &self,
         series: &SeriesMeta,
         errs: &mut Vec<ValidationError>,
-    ) -> Option<DateTime<Tz>> {
+    ) -> Option<VodnikZonedDateTime> {
         // just parse a timestamp .. cant be that hard
 
         let tz_str: &str = match &self.ref_time.timezone_style {
@@ -439,7 +500,7 @@ impl GridQuery {
             TimezoneStyle::UTC => "UTC",
         };
 
-        let tz = match chrono_tz::Tz::from_str_insensitive(tz_str) {
+        let tz = match VodnikTimezoneId::from_str_insensitive(tz_str) {
             Ok(tz) => tz,
             Err(e) => {
                 errs.push(ValidationError::InvalidTimezone(e.to_string()));
@@ -447,20 +508,17 @@ impl GridQuery {
             }
         };
 
-        let naive = match chrono::NaiveDateTime::parse_from_str(
-            &self.ref_time.timestamp.0,
-            "%Y-%m-%d %H:%M:%S", // TODO: config/param
-        ) {
-            Ok(naive) => naive,
+        let local = match VodnikLocalDateTime::parse_from_str(&self.ref_time.timestamp.0) {
+            Ok(local) => local,
             Err(e) => {
                 errs.push(ValidationError::InvalidTimestamp(e.to_string()));
                 return None;
             }
         };
 
-        match tz.from_local_datetime(&naive) {
-            chrono::LocalResult::Single(dt) => Some(dt),
-            chrono::LocalResult::Ambiguous(early, late) => match self.dst_resolution.ambiguous {
+        match local.in_zone(&tz, &self.dst_resolution).ok()? {
+            ZoningResult::Exact(dt) => Some(dt),
+            ZoningResult::Ambiguous { early, late } => match self.dst_resolution.ambiguous {
                 AmbiguousTimeResolution::Reject => {
                     errs.push(ValidationError::AmbiguousLocalTime("ref_time".to_string()));
                     None
@@ -474,7 +532,7 @@ impl GridQuery {
                     None
                 }
             },
-            chrono::LocalResult::None => {
+            ZoningResult::Nonexistent => {
                 errs.push(ValidationError::NonexistentLocalTime(
                     "ref_time".to_string(),
                 ));
