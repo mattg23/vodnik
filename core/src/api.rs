@@ -29,7 +29,7 @@ pub struct BatchIngest {
 
 impl BatchIngest {
     pub fn validate(&self) -> Result<(), IngestError> {
-        if self.ts.len() != self.vals.len() && self.vals.len() == self.qs.len() {
+        if self.ts.len() != self.vals.len() || self.vals.len() != self.qs.len() {
             warn!("length mismatch");
             return Err(IngestError::LengthMismatch);
         }

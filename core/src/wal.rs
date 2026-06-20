@@ -226,8 +226,8 @@ impl WalFrame {
     }
 
     pub fn write(&self, mut w: impl io::Write) -> Result<(), io::Error> {
-        w.write(&self.len.to_le_bytes())?;
-        w.write(&self.crc.to_le_bytes())?;
+        w.write_all(&self.len.to_le_bytes())?;
+        w.write_all(&self.crc.to_le_bytes())?;
         w.write_all(&self.payload.as_slice())?;
         Ok(())
     }
